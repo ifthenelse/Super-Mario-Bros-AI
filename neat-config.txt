@@ -39,11 +39,11 @@ compatibility_disjoint_coefficient = 1.0
 compatibility_weight_coefficient   = 0.5
 
 # Tassi di mutazione per connessioni
-conn_add_prob             = 0.5
+conn_add_prob             = 0.7
 conn_delete_prob          = 0.5
 
 # Nodi
-node_add_prob              = 0.2
+node_add_prob              = 0.3
 node_delete_prob           = 0.2
 
 # Response dei nodi (moltiplicatore dopo l'aggregazione)
@@ -64,18 +64,18 @@ weight_init_mean              = 0.0
 weight_init_stdev             = 1.0
 weight_max_value                = 30
 weight_min_value                 = -30
-weight_mutate_power               = 0.5
-weight_mutate_rate                 = 0.8
-weight_replace_rate                 = 0.1
+weight_mutate_power               = 0.8
+weight_mutate_rate                 = 0.9
+weight_replace_rate                 = 0.15
 
 [DefaultSpeciesSet]
 compatibility_threshold      = 1.0
 
 [DefaultStagnation]
 species_fitness_func           = max
-max_stagnation                  = 20
-species_elitism                  = 2
+max_stagnation                  = 15
+species_elitism                  = 1
 
 [DefaultReproduction]
-elitism                          = 2
+elitism                          = 1
 survival_threshold                = 0.2
