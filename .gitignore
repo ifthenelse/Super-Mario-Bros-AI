@@ -84,3 +84,10 @@ wandb/
 tensorboard/
 checkpoints/
 models/
+
+# NEAT artifacts
+neat-checkpoint-*
+winner.pkl
+
+# Binary files
+*.nes
