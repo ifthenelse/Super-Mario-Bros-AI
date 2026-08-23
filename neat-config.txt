@@ -8,8 +8,8 @@ reset_on_extinction     = True
 no_fitness_termination  = False
 
 [DefaultGenome]
-# Inputs: mario_y (1) + x_speed (1) + y_speed (1) + enemies 5x(presence,dx,dy,type)=20 + tile grid 8x5=40 -> 63 total
-num_inputs              = 63
+# Inputs: mario_y (1) + x_speed (1) + y_speed (1) + power_state (1) + enemies 5x(presence,dx,dy,type)=20 + tile grid 8x5=40 -> 64 total
+num_inputs              = 64
 num_outputs              = 9
 num_hidden                = 0
 feed_forward             = True
