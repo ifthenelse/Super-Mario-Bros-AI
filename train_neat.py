@@ -16,35 +16,80 @@ import numpy as np
 
 import stable_retro
 
-# --- Indirizzi RAM validati con ram_probe.py ---
+# --- Indirizzi RAM validati con ram_probe.py / ram_probe_advanced.py ---
 ADDR_X_SCREEN = 0x0086
+ADDR_X_PAGE = 0x006D
 ADDR_Y_POS = 0x00CE
+ADDR_X_SPEED = 0x0057
+ADDR_Y_SPEED = 0x009F
+
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
+TILE_BUFFER_BASE = 0x0500
+TILE_ROWS = 13
+TILE_COLS_PER_PAGE = 16
+
+# Griglia di tile: colonne davanti/dietro Mario e righe sopra/sotto (in pixel, passo 16 = 1 tile)
+TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96]
+TILE_ROW_OFFSETS = [-32, -16, 0, 16, 32]
+
 MAX_STEPS_PER_EPISODE = 5000
 STUCK_STEPS_LIMIT = 250  # termina l'episodio se Mario non avanza per N step
 
 
+def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
+    """Restituisce 1 se il tile in (mario_world_x+dx, mario_y+dy) e' solido, 0 altrimenti."""
+    x = mario_world_x + dx
+    y = mario_y + dy - 16
+
+    page = (x // 256) % 2
+    col = (x % 256) // 16
+    row = (y - 32) // 16
+
+    if row < 0 or row >= TILE_ROWS:
+        return 0
+
+    addr = TILE_BUFFER_BASE + page * TILE_ROWS * TILE_COLS_PER_PAGE + row * TILE_COLS_PER_PAGE + col
+    if addr < 0 or addr >= len(ram):
+        return 0
+
+    return 1 if ram[addr] != 0 else 0
+
+
 def build_observation(ram: np.ndarray) -> list:
-    """Costruisce il vettore di input a 16 valori per la rete NEAT."""
-    mario_x = int(ram[ADDR_X_SCREEN])
+    """Costruisce il vettore di input per la rete NEAT: posizione Y, velocita',
+    nemici vicini e griglia di tile del terreno."""
+    mario_x_screen = int(ram[ADDR_X_SCREEN])
+    mario_x_page = int(ram[ADDR_X_PAGE])
+    mario_world_x = mario_x_page * 256 + mario_x_screen
     mario_y = int(ram[ADDR_Y_POS])
 
-    obs = [mario_y / 240.0]  # posizione Y normalizzata
+    x_speed = int(np.int8(ram[ADDR_X_SPEED]))
+    y_speed = int(np.int8(ram[ADDR_Y_SPEED]))
+
+    obs = [
+        mario_y / 240.0,
+        x_speed / 30.0,   # normalizzazione approssimativa (velocita' max osservata ~28)
+        y_speed / 10.0,   # normalizzazione approssimativa (velocita' max osservata ~5)
+    ]
 
     for i in range(N_ENEMY_SLOTS):
         drawn = int(ram[ADDR_ENEMY_DRAWN + i])
         if drawn:
             enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
             enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
-            dx = (enemy_x - mario_x) / 256.0
+            dx = (enemy_x - mario_x_screen) / 256.0
             dy = (enemy_y - mario_y) / 240.0
             obs.extend([1.0, dx, dy])
         else:
             obs.extend([0.0, 0.0, 0.0])
+
+    for row_offset in TILE_ROW_OFFSETS:
+        for col_offset in TILE_COL_OFFSETS:
+            obs.append(float(get_tile(ram, mario_world_x, mario_y, col_offset, row_offset)))
 
     return obs
 
