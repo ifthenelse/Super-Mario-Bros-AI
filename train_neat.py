@@ -1,10 +1,10 @@
 """
-Training NEAT su Super Mario Bros (stable-retro).
+NEAT training on Super Mario Bros (stable-retro).
 
-Ogni genoma della popolazione NEAT gioca un episodio (o finché non muore /
-resta bloccato troppo a lungo), guidato da un'osservazione costruita a
-partire dalla RAM (posizione Y di Mario + info sui nemici vicini).
-La fitness è la distanza massima raggiunta nel livello.
+Each genome in the NEAT population plays one episode (until it dies or
+gets stuck for too long), guided by an observation built from RAM
+(Mario's Y position + info about nearby enemies).
+Fitness is the maximum distance reached in the level.
 """
 
 import os
@@ -16,7 +16,7 @@ import numpy as np
 
 import stable_retro
 
-# --- Indirizzi RAM validati con ram_probe.py / ram_probe_advanced.py ---
+# --- RAM addresses validated with ram_probe.py / ram_probe_advanced.py ---
 ADDR_X_SCREEN = 0x0086
 ADDR_X_PAGE = 0x006D
 ADDR_Y_POS = 0x00CE
@@ -25,7 +25,7 @@ ADDR_Y_SPEED = 0x009F
 
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
-ADDR_ENEMY_TYPE = 0x0016   # validato: tipo nemico per slot (es. 6 = Koopa Troopa)
+ADDR_ENEMY_TYPE = 0x0016   # validated: enemy type per slot (e.g. 6 = Koopa Troopa)
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
@@ -33,18 +33,18 @@ TILE_BUFFER_BASE = 0x0500
 TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
 
-# Griglia di tile: colonne davanti/dietro Mario e righe sopra/sotto (in pixel, passo 16 = 1 tile)
+# Tile grid: columns ahead of/behind Mario and rows above/below (in pixels, step 16 = 1 tile)
 TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96]
 TILE_ROW_OFFSETS = [-32, -16, 0, 16, 32]
 
 MAX_STEPS_PER_EPISODE = 5000
-STUCK_STEPS_LIMIT = 250  # termina l'episodio se Mario non avanza per N step
+STUCK_STEPS_LIMIT = 250  # end the episode if Mario hasn't progressed for N steps
 
 
 def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
-    """Restituisce 1 se il tile in (mario_world_x+dx, mario_y+dy) e' solido, 0 altrimenti."""
+    """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
     x = mario_world_x + dx
-    y = mario_y + dy - 16
+    y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
 
     page = (x // 256) % 2
     col = (x % 256) // 16
@@ -61,8 +61,8 @@ def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
 
 
 def build_observation(ram: np.ndarray) -> list:
-    """Costruisce il vettore di input per la rete NEAT: posizione Y, velocita',
-    nemici vicini e griglia di tile del terreno."""
+    """Builds the input vector for the NEAT network: Y position, speed,
+    nearby enemies, and terrain tile grid."""
     mario_x_screen = int(ram[ADDR_X_SCREEN])
     mario_x_page = int(ram[ADDR_X_PAGE])
     mario_world_x = mario_x_page * 256 + mario_x_screen
@@ -73,11 +73,11 @@ def build_observation(ram: np.ndarray) -> list:
 
     obs = [
         mario_y / 240.0,
-        x_speed / 30.0,   # normalizzazione approssimativa (velocita' max osservata ~28)
-        y_speed / 10.0,   # normalizzazione approssimativa (velocita' max osservata ~5)
+        x_speed / 30.0,   # rough normalization (observed max speed ~28)
+        y_speed / 10.0,   # rough normalization (observed max speed ~5)
     ]
 
-    # Nemici: presenza, dx, dy, tipo (5 slot x 4 valori = 20)
+    # Enemies: presence, dx, dy, type (5 slots x 4 values = 20)
 
     for i in range(N_ENEMY_SLOTS):
         drawn = int(ram[ADDR_ENEMY_DRAWN + i])
@@ -87,7 +87,7 @@ def build_observation(ram: np.ndarray) -> list:
             enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
             dx = (enemy_x - mario_x_screen) / 256.0
             dy = (enemy_y - mario_y) / 240.0
-            obs.extend([1.0, dx, dy, enemy_type / 10.0])  # normalizzazione approssimativa
+            obs.extend([1.0, dx, dy, enemy_type / 10.0])  # rough normalization
         else:
             obs.extend([0.0, 0.0, 0.0, 0.0])
 
@@ -99,7 +99,7 @@ def build_observation(ram: np.ndarray) -> list:
 
 
 def outputs_to_action(outputs) -> np.ndarray:
-    """Converte gli output della rete (continui) in un array di bottoni 0/1."""
+    """Converts the network's (continuous) outputs into a 0/1 button array."""
     return np.array([1 if o > 0.5 else 0 for o in outputs], dtype=np.int8)
 
 
@@ -133,7 +133,7 @@ def eval_genomes(genomes, config, env, render=False):
                 break
 
             if step - last_progress_step > STUCK_STEPS_LIMIT:
-                # Mario è bloccato da troppo tempo: inutile continuare l'episodio
+                # Mario has been stuck too long: no point continuing the episode
                 break
 
         genome.fitness = float(max_world_x)
@@ -150,7 +150,7 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
     )
 
     if resume_from:
-        print(f"Riprendo il training dal checkpoint: {resume_from}")
+        print(f"Resuming training from checkpoint: {resume_from}")
         population = neat.Checkpointer.restore_checkpoint(resume_from)
     else:
         population = neat.Population(config)
@@ -171,12 +171,12 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
 
     env.close()
 
-    print(f"\nTraining completato in {elapsed / 60:.1f} minuti.")
-    print(f"Fitness del miglior genoma: {winner.fitness}")
+    print(f"\nTraining completed in {elapsed / 60:.1f} minutes.")
+    print(f"Best genome fitness: {winner.fitness}")
 
     with open("winner.pkl", "wb") as f:
         pickle.dump(winner, f)
-    print("Miglior genoma salvato in winner.pkl")
+    print("Best genome saved to winner.pkl")
 
     return winner, stats
 
@@ -199,12 +199,12 @@ if __name__ == "__main__":
                 latest_gen = gen
                 latest_checkpoint = f
 
-    ADDITIONAL_GENERATIONS = 50  # quante generazioni aggiungere rispetto al checkpoint trovato
+    ADDITIONAL_GENERATIONS = 50  # how many generations to add on top of the found checkpoint
 
     if latest_checkpoint:
-        print(f"Trovato checkpoint alla generazione {latest_gen}: proseguo per altre "
-              f"{ADDITIONAL_GENERATIONS} generazioni (totale {latest_gen + ADDITIONAL_GENERATIONS}).")
+        print(f"Found checkpoint at generation {latest_gen}: continuing for "
+              f"{ADDITIONAL_GENERATIONS} more generations (total {latest_gen + ADDITIONAL_GENERATIONS}).")
         run_training(config_path, n_generations=ADDITIONAL_GENERATIONS, resume_from=latest_checkpoint)
     else:
-        print("Nessun checkpoint trovato: avvio un training da zero (100 generazioni).")
+        print("No checkpoint found: starting training from scratch (100 generations).")
         run_training(config_path, n_generations=100)

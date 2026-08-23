@@ -1,7 +1,7 @@
 """
-Carica il miglior genoma salvato in winner.pkl e lo fa giocare
-con la finestra visibile, a velocità di gioco reale, per osservare
-concretamente cosa ha imparato (e dove si blocca).
+Loads the best genome saved in winner.pkl and plays it with the window
+visible, at real game speed, to see concretely what it learned
+(and where it gets stuck).
 """
 
 import os
@@ -9,6 +9,7 @@ import pickle
 import time
 
 import neat
+import numpy as np
 
 import stable_retro
 
@@ -40,8 +41,8 @@ def main():
     max_world_x = 0
     prev_lives = info.get("lives")
 
-    print(f"Fitness del genoma caricato (dal training): {winner.fitness}")
-    print("Avvio partita...\n")
+    print(f"Loaded genome fitness (from training): {winner.fitness}")
+    print("Starting the game...\n")
 
     step = 0
     while True:
@@ -60,8 +61,8 @@ def main():
 
         lives = info.get("lives")
         if lives is not None and prev_lives is not None and lives < prev_lives:
-            print(f"[step {step}] Mario ha perso una vita. "
-                  f"Posizione raggiunta: {world_x} (max finora: {max_world_x})")
+            print(f"[step {step}] Mario lost a life. "
+                  f"Position reached: {world_x} (max so far: {max_world_x})")
         prev_lives = lives
 
         env.render()
@@ -71,8 +72,8 @@ def main():
             time.sleep(frame_time - elapsed)
 
         if terminated or truncated:
-            print(f"\nEpisodio terminato allo step {step}.")
-            print(f"Distanza massima raggiunta: {max_world_x}")
+            print(f"\nEpisode ended at step {step}.")
+            print(f"Maximum distance reached: {max_world_x}")
             break
 
         step += 1

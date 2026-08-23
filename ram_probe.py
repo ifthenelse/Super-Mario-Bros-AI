@@ -1,12 +1,12 @@
 """
-Verifica gli indirizzi RAM di Super Mario Bros (NES) prima di usarli
-come osservazione per NEAT.
+Validates Super Mario Bros (NES) RAM addresses before using them
+as observation for NEAT.
 
-Gli indirizzi qui sotto sono quelli comunemente documentati per la ROM NTSC
-di Super Mario Bros (vedi Data Crystal RAM map). Con una ROM PAL/Europe
-alcuni potrebbero essere leggermente diversi: per questo li validiamo
-stampandoli mentre Mario si muove, e controllando che i valori abbiano senso
-(es. la posizione X cresce quando Mario va a destra, la Y cambia durante i salti).
+The addresses below are the ones commonly documented for the NTSC ROM
+of Super Mario Bros (see the Data Crystal RAM map). With a PAL/Europe
+ROM some might be slightly different: that's why we validate them by
+printing them while Mario moves, and checking the values make sense
+(e.g. the X position increases when Mario moves right, Y changes during jumps).
 """
 
 import time
@@ -15,16 +15,16 @@ import numpy as np
 
 import stable_retro
 
-# Indirizzi candidati (da validare)
-ADDR_X_PAGE = 0x006D       # pagina/schermo orizzontale di Mario
-ADDR_X_SCREEN = 0x0086     # posizione X di Mario sullo schermo corrente
-ADDR_Y_POS = 0x00CE        # posizione Y di Mario
-ADDR_PLAYER_STATE = 0x000E  # stato di Mario (es. 0x06/0x0B = sta morendo)
+# Candidate addresses (to be validated)
+ADDR_X_PAGE = 0x006D       # Mario's horizontal page/screen
+ADDR_X_SCREEN = 0x0086     # Mario's X position on the current screen
+ADDR_Y_POS = 0x00CE        # Mario's Y position
+ADDR_PLAYER_STATE = 0x000E  # Mario's state (e.g. 0x06/0x0B = dying)
 
 N_ENEMY_SLOTS = 5
-ADDR_ENEMY_DRAWN = 0x000F      # 5 byte: 1 se il nemico nello slot è attivo
-ADDR_ENEMY_X_SCREEN = 0x0087   # 5 byte: posizione X nemico sullo schermo
-ADDR_ENEMY_Y_POS = 0x00CF      # 5 byte: posizione Y nemico
+ADDR_ENEMY_DRAWN = 0x000F      # 5 bytes: 1 if the enemy in that slot is active
+ADDR_ENEMY_X_SCREEN = 0x0087   # 5 bytes: enemy X position on screen
+ADDR_ENEMY_Y_POS = 0x00CF      # 5 bytes: enemy Y position
 
 
 def read_ram_values(ram: np.ndarray) -> dict:
@@ -54,14 +54,14 @@ def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
     obs, info = env.reset()
 
-    print("Validazione indirizzi RAM. Osserva se i valori hanno senso:")
-    print("- mario_x_screen dovrebbe cambiare quando Mario si muove")
-    print("- mario_y dovrebbe cambiare durante salti/cadute")
-    print("- player_state dovrebbe cambiare se Mario muore\n")
+    print("RAM address validation. Check whether the values make sense:")
+    print("- mario_x_screen should change when Mario moves")
+    print("- mario_y should change during jumps/falls")
+    print("- player_state should change if Mario dies\n")
 
     n_steps = 300
     frame_time = 1.0 / 60.0
-    print_every = 30  # stampa ogni mezzo secondo circa
+    print_every = 30  # print roughly every half second
 
     for step in range(n_steps):
         step_start = time.time()
@@ -78,7 +78,7 @@ def main():
                   f"x_screen={values['mario_x_screen']:>3} "
                   f"y={values['mario_y']:>3} "
                   f"state={values['player_state']:>3} "
-                  f"nemici_attivi={len(values['enemies'])} "
+                  f"active_enemies={len(values['enemies'])} "
                   f"| info_xscrollLo={info.get('xscrollLo')} "
                   f"lives={info.get('lives')}")
 
@@ -89,7 +89,7 @@ def main():
             time.sleep(frame_time - elapsed)
 
         if terminated or truncated:
-            print(f"Episodio terminato allo step {step}.")
+            print(f"Episode ended at step {step}.")
             obs, info = env.reset()
 
     try:
@@ -97,7 +97,7 @@ def main():
     except AttributeError:
         pass
 
-    print("\nValidazione completata.")
+    print("\nValidation completed.")
 
 
 if __name__ == "__main__":

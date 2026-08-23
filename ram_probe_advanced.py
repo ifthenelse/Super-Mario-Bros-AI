@@ -1,17 +1,17 @@
 """
-Verifica la lettura di:
-- griglia di tile locale intorno a Mario (terreno/blocchi solidi, buche)
-- velocità X e Y di Mario
+Validates the reading of:
+- the local tile grid around Mario (terrain/solid blocks, pits)
+- Mario's X and Y speed
 
-La formula per leggere i tile dal buffer di livello (indirizzo base 0x0500)
-è quella storicamente usata dagli script Lua di bot per SMB su NES: dato che
-lo schermo di gioco è diviso in due "pagine" da 13 righe x 16 colonne di tile,
-si calcola in quale pagina/riga/colonna cade un punto (x, y) del mondo e si
-legge il byte corrispondente (0 = vuoto, diverso da 0 = solido).
+The formula for reading tiles from the level buffer (base address 0x0500)
+is the one historically used by Lua bot scripts for SMB on NES: since the
+game screen is split into two "pages" of 13 rows x 16 columns of tiles,
+it computes which page/row/column a world point (x, y) falls into and
+reads the corresponding byte (0 = empty, non-zero = solid).
 
-Gli indirizzi di velocità (0x0057 per X, 0x009F per Y) sono candidati
-documentati nella disassembly classica di SMB: li validiamo stampandoli
-mentre Mario cammina/salta/cade.
+The speed addresses (0x0057 for X, 0x009F for Y) are candidates
+documented in the classic SMB disassembly: we validate them by printing
+them while Mario walks/jumps/falls.
 """
 
 import time
@@ -25,12 +25,12 @@ ADDR_X_SCREEN = 0x0086
 ADDR_X_PAGE = 0x006D
 ADDR_Y_POS = 0x00CE
 
-ADDR_X_SPEED = 0x0057  # candidato: velocita' orizzontale
-ADDR_Y_SPEED = 0x009F  # candidato: velocita' verticale
+ADDR_X_SPEED = 0x0057  # candidate: horizontal speed
+ADDR_Y_SPEED = 0x009F  # candidate: vertical speed
 
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
-ADDR_ENEMY_TYPE = 0x0016   # candidato: tipo nemico per slot (0=Goomba, 1=Koopa verde, ...)
+ADDR_ENEMY_TYPE = 0x0016   # candidate: enemy type per slot (0=Goomba, 1=green Koopa, ...)
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
@@ -40,9 +40,9 @@ TILE_COLS_PER_PAGE = 16
 
 
 def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
-    """Restituisce 1 se il tile in (mario_world_x+dx, mario_y+dy) e' solido, 0 altrimenti."""
+    """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
     x = mario_world_x + dx
-    y = mario_y + dy - 16  # offset verticale empirico usato negli script di riferimento
+    y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
 
     page = (x // 256) % 2
     col = (x % 256) // 16
@@ -59,11 +59,11 @@ def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
 
 
 def print_tile_grid(ram: np.ndarray, mario_world_x: int, mario_y: int):
-    """Stampa una griglia ASCII 10 colonne x 8 righe intorno a Mario."""
-    print("Griglia tile (X = solido, . = vuoto, M = Mario):")
-    for row_offset in range(-3, 5):  # righe sopra/sotto
+    """Prints a 10-columns x 8-rows ASCII grid around Mario."""
+    print("Tile grid (X = solid, . = empty, M = Mario):")
+    for row_offset in range(-3, 5):  # rows above/below
         line = ""
-        for col_offset in range(-2, 8):  # colonne dietro/avanti
+        for col_offset in range(-2, 8):  # columns behind/ahead
             if row_offset == 0 and col_offset == 0:
                 line += "M"
                 continue
@@ -78,49 +78,49 @@ def print_tile_grid(ram: np.ndarray, mario_world_x: int, mario_y: int):
 def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
     obs, info = env.reset()
-    env.render()  # forza la creazione della finestra pyglet, cosi' possiamo agganciare i tasti
+    env.render()  # forces the pyglet window to be created, so we can hook key events
 
     speed_state = {"multiplier": 1.0, "paused": False}
 
     def on_key_press(symbol, modifiers):
         if symbol in (pyglet.window.key.PLUS, pyglet.window.key.EQUAL, pyglet.window.key.NUM_ADD):
             speed_state["multiplier"] = min(speed_state["multiplier"] * 1.5, 16.0)
-            print(f"Velocita': {speed_state['multiplier']:.2f}x")
+            print(f"Speed: {speed_state['multiplier']:.2f}x")
         elif symbol in (pyglet.window.key.MINUS, pyglet.window.key.NUM_SUBTRACT):
             speed_state["multiplier"] = max(speed_state["multiplier"] / 1.5, 0.1)
-            print(f"Velocita': {speed_state['multiplier']:.2f}x")
+            print(f"Speed: {speed_state['multiplier']:.2f}x")
         elif symbol == pyglet.window.key._0:
             speed_state["multiplier"] = 1.0
-            print("Velocita' resettata a 1.00x")
+            print("Speed reset to 1.00x")
         elif symbol == pyglet.window.key.SPACE:
             speed_state["paused"] = not speed_state["paused"]
-            print("PAUSA" if speed_state["paused"] else "RIPRESA")
+            print("PAUSED" if speed_state["paused"] else "RESUMED")
 
     env.viewer.window.push_handlers(on_key_press=on_key_press)
 
-    print("Validazione griglia tile e velocita'.")
-    print("Controlli finestra di gioco: '+' accelera, '-' rallenta, '0' resetta a 1x, SPAZIO pausa/riprende.")
-    print("Premi Ctrl+C nel terminale per interrompere quando hai visto abbastanza.\n")
+    print("Tile grid and speed validation.")
+    print("Game window controls: '+' speeds up, '-' slows down, '0' resets to 1x, SPACE pauses/resumes.")
+    print("Press Ctrl+C in the terminal to stop once you've seen enough.\n")
 
     frame_time = 1.0 / 60.0
     print_every = 30
     step = 0
 
-    # Azione: destra costante + salto periodico, per superare ostacoli
-    # e arrivare abbastanza avanti da incontrare nemici diversi (utile solo per la validazione)
+    # Action: constant right + periodic jump, to clear obstacles
+    # and get far enough to encounter different enemies (useful only for validation)
     action = np.zeros(9, dtype=np.int8)
-    action[7] = 1  # RIGHT (indice confermato in precedenza)
+    action[7] = 1  # RIGHT (index confirmed earlier)
 
     try:
         while True:
             step_start = time.time()
 
             if speed_state["paused"]:
-                env.render()  # mantiene la finestra reattiva ai tasti mentre e' in pausa
+                env.render()  # keeps the window responsive to keys while paused
                 time.sleep(0.05)
                 continue
 
-            # Salto periodico (indice 8 = A, candidato) per superare ostacoli
+            # Periodic jump (index 8 = A, candidate) to clear obstacles
             action[8] = 1 if (step % 90) < 15 else 0
 
             obs, reward, terminated, truncated, info = env.step(action)
@@ -131,7 +131,7 @@ def main():
             mario_world_x = mario_x_page * 256 + mario_x_screen
             mario_y = int(ram[ADDR_Y_POS])
 
-            x_speed_raw = int(np.int8(ram[ADDR_X_SPEED]))  # letto come signed
+            x_speed_raw = int(np.int8(ram[ADDR_X_SPEED]))  # read as signed
             y_speed_raw = int(np.int8(ram[ADDR_Y_SPEED]))
 
             if step % print_every == 0:
@@ -145,7 +145,7 @@ def main():
                         ex = int(ram[ADDR_ENEMY_X_SCREEN + i])
                         enemy_info.append(f"slot{i}:type={etype},x={ex}")
                 if enemy_info:
-                    print("  Nemici attivi: " + " | ".join(enemy_info))
+                    print("  Active enemies: " + " | ".join(enemy_info))
 
                 print_tile_grid(ram, mario_world_x, mario_y)
 
@@ -157,7 +157,7 @@ def main():
                 time.sleep(target_frame_time - elapsed)
 
             if terminated or truncated:
-                print("Episodio terminato, reset.")
+                print("Episode ended, resetting.")
                 obs, info = env.reset()
 
             step += 1
@@ -170,7 +170,7 @@ def main():
     except AttributeError:
         pass
 
-    print("\nValidazione interrotta dall'utente.")
+    print("\nValidation interrupted by user.")
 
 
 if __name__ == "__main__":
