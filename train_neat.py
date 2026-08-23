@@ -25,6 +25,7 @@ ADDR_Y_SPEED = 0x009F
 
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
+ADDR_ENEMY_TYPE = 0x0016   # validato: tipo nemico per slot (es. 6 = Koopa Troopa)
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
@@ -76,16 +77,19 @@ def build_observation(ram: np.ndarray) -> list:
         y_speed / 10.0,   # normalizzazione approssimativa (velocita' max osservata ~5)
     ]
 
+    # Nemici: presenza, dx, dy, tipo (5 slot x 4 valori = 20)
+
     for i in range(N_ENEMY_SLOTS):
         drawn = int(ram[ADDR_ENEMY_DRAWN + i])
         if drawn:
             enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
             enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
+            enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
             dx = (enemy_x - mario_x_screen) / 256.0
             dy = (enemy_y - mario_y) / 240.0
-            obs.extend([1.0, dx, dy])
+            obs.extend([1.0, dx, dy, enemy_type / 10.0])  # normalizzazione approssimativa
         else:
-            obs.extend([0.0, 0.0, 0.0])
+            obs.extend([0.0, 0.0, 0.0, 0.0])
 
     for row_offset in TILE_ROW_OFFSETS:
         for col_offset in TILE_COL_OFFSETS:
