@@ -139,7 +139,8 @@ def eval_genomes(genomes, config, env, render=False):
         genome.fitness = float(max_world_x)
 
 
-def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: str = "neat-checkpoint-"):
+def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: str = "neat-checkpoint-",
+                  resume_from: str | None = None):
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -148,7 +149,11 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
         config_path,
     )
 
-    population = neat.Population(config)
+    if resume_from:
+        print(f"Riprendo il training dal checkpoint: {resume_from}")
+        population = neat.Checkpointer.restore_checkpoint(resume_from)
+    else:
+        population = neat.Population(config)
 
     population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
@@ -177,6 +182,29 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
 
 
 if __name__ == "__main__":
+    import glob
+    import re
+
     local_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(local_dir, "neat-config.txt")
-    run_training(config_path, n_generations=50)
+
+    checkpoint_files = glob.glob(os.path.join(local_dir, "neat-checkpoint-*"))
+    latest_checkpoint = None
+    latest_gen = -1
+    for f in checkpoint_files:
+        match = re.search(r"neat-checkpoint-(\d+)$", f)
+        if match:
+            gen = int(match.group(1))
+            if gen > latest_gen:
+                latest_gen = gen
+                latest_checkpoint = f
+
+    ADDITIONAL_GENERATIONS = 50  # quante generazioni aggiungere rispetto al checkpoint trovato
+
+    if latest_checkpoint:
+        print(f"Trovato checkpoint alla generazione {latest_gen}: proseguo per altre "
+              f"{ADDITIONAL_GENERATIONS} generazioni (totale {latest_gen + ADDITIONAL_GENERATIONS}).")
+        run_training(config_path, n_generations=ADDITIONAL_GENERATIONS, resume_from=latest_checkpoint)
+    else:
+        print("Nessun checkpoint trovato: avvio un training da zero (100 generazioni).")
+        run_training(config_path, n_generations=100)
