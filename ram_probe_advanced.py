@@ -27,6 +27,12 @@ ADDR_Y_POS = 0x00CE
 ADDR_X_SPEED = 0x0057  # candidato: velocita' orizzontale
 ADDR_Y_SPEED = 0x009F  # candidato: velocita' verticale
 
+N_ENEMY_SLOTS = 5
+ADDR_ENEMY_DRAWN = 0x000F
+ADDR_ENEMY_TYPE = 0x0016   # candidato: tipo nemico per slot (0=Goomba, 1=Koopa verde, ...)
+ADDR_ENEMY_X_SCREEN = 0x0087
+ADDR_ENEMY_Y_POS = 0x00CF
+
 TILE_BUFFER_BASE = 0x0500
 TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
@@ -79,13 +85,17 @@ def main():
     print_every = 30
     step = 0
 
-    # Azione fissa: solo destra, per avere movimento prevedibile da confrontare a schermo
+    # Azione: destra costante + salto periodico, per superare ostacoli
+    # e arrivare abbastanza avanti da incontrare nemici diversi (utile solo per la validazione)
     action = np.zeros(9, dtype=np.int8)
-    action[7] = 1  # indice "RIGHT" plausibile in MultiBinary(9); verificare a schermo
+    action[7] = 1  # RIGHT (indice confermato in precedenza)
 
     try:
         while True:
             step_start = time.time()
+
+            # Salto periodico (indice 8 = A, candidato) per superare ostacoli
+            action[8] = 1 if (step % 90) < 15 else 0
 
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
@@ -101,6 +111,16 @@ def main():
             if step % print_every == 0:
                 print(f"[step {step:4d}] world_x={mario_world_x} y={mario_y} "
                       f"x_speed={x_speed_raw} y_speed={y_speed_raw}")
+
+                enemy_info = []
+                for i in range(N_ENEMY_SLOTS):
+                    if int(ram[ADDR_ENEMY_DRAWN + i]):
+                        etype = int(ram[ADDR_ENEMY_TYPE + i])
+                        ex = int(ram[ADDR_ENEMY_X_SCREEN + i])
+                        enemy_info.append(f"slot{i}:type={etype},x={ex}")
+                if enemy_info:
+                    print("  Nemici attivi: " + " | ".join(enemy_info))
+
                 print_tile_grid(ram, mario_world_x, mario_y)
 
             env.render()
