@@ -24,6 +24,7 @@
 *.zip binary
 *.7z binary
 *.pdf binary
+*.nes binary
 
 # Common generated files
 *.pyc binary
