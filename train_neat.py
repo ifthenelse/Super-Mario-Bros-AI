@@ -122,18 +122,18 @@ TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
 
 # Tile grid: columns ahead of/behind Mario and rows above/below (in pixels, step 16 = 1 tile)
-TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96]
-TILE_ROW_OFFSETS = [-32, -16, 0, 16, 32]
+# Extended forward reach (more reaction time) and one extra row up (ceiling awareness for narrow passages)
+TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96, 112, 128]
+TILE_ROW_OFFSETS = [-48, -32, -16, 0, 16, 32]
+
+ENEMY_CEILING_CHECK_TILES = 3  # how many tiles above an enemy to check for jump-over clearance
 
 MAX_STEPS_PER_EPISODE = 5000
 STUCK_STEPS_LIMIT = 250  # end the episode if Mario hasn't progressed for N steps
 
 
-def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
-    """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
-    x = mario_world_x + dx
-    y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
-
+def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
+    """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
     page = (x // 256) % 2
     col = (x % 256) // 16
     row = (y - 32) // 16
@@ -146,6 +146,28 @@ def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
         return 0
 
     return 1 if ram[addr] != 0 else 0
+
+
+def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
+    """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
+    x = mario_world_x + dx
+    y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
+    return get_tile_absolute(ram, x, y)
+
+
+def enemy_ceiling_clearance(ram: np.ndarray, enemy_world_x: int, enemy_y: int,
+                             max_check: int = ENEMY_CEILING_CHECK_TILES) -> float:
+    """Counts how many empty tiles are directly above an enemy (up to max_check),
+    normalized to 0-1. A low value means there's little or no room to jump onto
+    the enemy from above; a high value means it's safe to land on top of it."""
+    clearance = 0
+    for i in range(1, max_check + 1):
+        y = enemy_y - 16 * i - 16  # same vertical offset convention as get_tile
+        if get_tile_absolute(ram, enemy_world_x, y) == 0:
+            clearance += 1
+        else:
+            break
+    return clearance / max_check
 
 
 def build_observation(ram: np.ndarray) -> list:
@@ -170,7 +192,8 @@ def build_observation(ram: np.ndarray) -> list:
     level = int(np.int8(ram[ADDR_LEVEL_LO])) + 1
     obs.extend(get_level_type_onehot(world, level))
 
-    # Enemies: presence, dx, dy, type (5 slots x 4 values = 20)
+    # Enemies: presence, dx, dy, type, ceiling clearance above, estimated time-to-impact
+    # (5 slots x 6 values = 30)
 
     for i in range(N_ENEMY_SLOTS):
         drawn = int(ram[ADDR_ENEMY_DRAWN + i])
@@ -178,11 +201,17 @@ def build_observation(ram: np.ndarray) -> list:
             enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
             enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
             enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
-            dx = (enemy_x - mario_x_screen) / 256.0
-            dy = (enemy_y - mario_y) / 240.0
-            obs.extend([1.0, dx, dy, enemy_type / 10.0])  # rough normalization
+            dx = enemy_x - mario_x_screen
+            dy = enemy_y - mario_y
+            enemy_world_x = mario_world_x + dx
+
+            clearance = enemy_ceiling_clearance(ram, enemy_world_x, enemy_y)
+            # Rough "frames until horizontally aligned" estimate, sign preserved (ahead/behind)
+            time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
+
+            obs.extend([1.0, dx / 256.0, dy / 240.0, enemy_type / 10.0, clearance, time_to_enemy])
         else:
-            obs.extend([0.0, 0.0, 0.0, 0.0])
+            obs.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
     for row_offset in TILE_ROW_OFFSETS:
         for col_offset in TILE_COL_OFFSETS:
