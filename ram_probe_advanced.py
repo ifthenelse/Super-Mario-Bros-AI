@@ -17,6 +17,7 @@ mentre Mario cammina/salta/cade.
 import time
 
 import numpy as np
+import pyglet
 
 import stable_retro
 
@@ -77,9 +78,29 @@ def print_tile_grid(ram: np.ndarray, mario_world_x: int, mario_y: int):
 def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
     obs, info = env.reset()
+    env.render()  # forza la creazione della finestra pyglet, cosi' possiamo agganciare i tasti
+
+    speed_state = {"multiplier": 1.0, "paused": False}
+
+    def on_key_press(symbol, modifiers):
+        if symbol in (pyglet.window.key.PLUS, pyglet.window.key.EQUAL, pyglet.window.key.NUM_ADD):
+            speed_state["multiplier"] = min(speed_state["multiplier"] * 1.5, 16.0)
+            print(f"Velocita': {speed_state['multiplier']:.2f}x")
+        elif symbol in (pyglet.window.key.MINUS, pyglet.window.key.NUM_SUBTRACT):
+            speed_state["multiplier"] = max(speed_state["multiplier"] / 1.5, 0.1)
+            print(f"Velocita': {speed_state['multiplier']:.2f}x")
+        elif symbol == pyglet.window.key._0:
+            speed_state["multiplier"] = 1.0
+            print("Velocita' resettata a 1.00x")
+        elif symbol == pyglet.window.key.SPACE:
+            speed_state["paused"] = not speed_state["paused"]
+            print("PAUSA" if speed_state["paused"] else "RIPRESA")
+
+    env.viewer.window.push_handlers(on_key_press=on_key_press)
 
     print("Validazione griglia tile e velocita'.")
-    print("Premi Ctrl+C per interrompere quando hai visto abbastanza.\n")
+    print("Controlli finestra di gioco: '+' accelera, '-' rallenta, '0' resetta a 1x, SPAZIO pausa/riprende.")
+    print("Premi Ctrl+C nel terminale per interrompere quando hai visto abbastanza.\n")
 
     frame_time = 1.0 / 60.0
     print_every = 30
@@ -93,6 +114,11 @@ def main():
     try:
         while True:
             step_start = time.time()
+
+            if speed_state["paused"]:
+                env.render()  # mantiene la finestra reattiva ai tasti mentre e' in pausa
+                time.sleep(0.05)
+                continue
 
             # Salto periodico (indice 8 = A, candidato) per superare ostacoli
             action[8] = 1 if (step % 90) < 15 else 0
@@ -126,8 +152,9 @@ def main():
             env.render()
 
             elapsed = time.time() - step_start
-            if elapsed < frame_time:
-                time.sleep(frame_time - elapsed)
+            target_frame_time = frame_time / speed_state["multiplier"]
+            if elapsed < target_frame_time:
+                time.sleep(target_frame_time - elapsed)
 
             if terminated or truncated:
                 print("Episodio terminato, reset.")
