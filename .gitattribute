@@ -1,0 +1,31 @@
+* text=auto
+
+# Source and configuration files
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.wav binary
+*.mp3 binary
+*.mp4 binary
+*.zip binary
+*.7z binary
+*.pdf binary
+
+# Common generated files
+*.pyc binary
+__pycache__/ export-ignore
+.pytest_cache/ export-ignore
