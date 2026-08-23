@@ -7,14 +7,75 @@ gets stuck for too long), guided by an observation built from RAM
 Fitness is the maximum distance reached in the level.
 """
 
+import argparse
 import os
 import pickle
+import re
+import select
+import sys
 import time
 
 import neat
 import numpy as np
 
 import stable_retro
+
+DEFAULT_TIME_BUDGET_MINUTES = 60.0
+PROMPT_TIMEOUT_SECONDS = 15
+
+
+def parse_duration_to_minutes(raw: str) -> float:
+    """Parses a duration string into minutes.
+
+    Accepted formats:
+    - a plain number (interpreted as minutes), e.g. "30" or "12.5"
+    - "XXhYYm" (hours and minutes), e.g. "1h30m"
+    - "XXh" (hours only), e.g. "2h"
+
+    Raises ValueError on any other format.
+    """
+    value = raw.strip()
+
+    if re.fullmatch(r"\d+(\.\d+)?", value):
+        return float(value)
+
+    match = re.fullmatch(r"(\d+)h(\d+)m", value)
+    if match:
+        hours, minutes = int(match.group(1)), int(match.group(2))
+        return hours * 60 + minutes
+
+    match = re.fullmatch(r"(\d+)h", value)
+    if match:
+        hours = int(match.group(1))
+        return hours * 60
+
+    raise ValueError(
+        f"Invalid time format: '{raw}'. Use a plain number of minutes (e.g. '30'), "
+        f"'XXhYYm' (e.g. '1h30m'), or 'XXh' (e.g. '2h')."
+    )
+
+
+def resolve_time_budget_minutes(cli_value: str | None) -> float:
+    """Resolves the time budget for this run: from the CLI argument if given,
+    otherwise by prompting the user with a timeout, falling back to the default."""
+    if cli_value is not None:
+        return parse_duration_to_minutes(cli_value)
+
+    print(f"The script will run for {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes. "
+          f"Type a value in minutes if you want to change it: ", end="", flush=True)
+
+    ready, _, _ = select.select([sys.stdin], [], [], PROMPT_TIMEOUT_SECONDS)
+    if not ready:
+        print(f"\nNo input received within {PROMPT_TIMEOUT_SECONDS} seconds. "
+              f"Using the default: {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes.")
+        return DEFAULT_TIME_BUDGET_MINUTES
+
+    line = sys.stdin.readline().strip()
+    if line == "":
+        print(f"Using the default: {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes.")
+        return DEFAULT_TIME_BUDGET_MINUTES
+
+    return parse_duration_to_minutes(line)
 
 # --- RAM addresses validated with ram_probe.py / ram_probe_advanced.py ---
 ADDR_X_SCREEN = 0x0086
@@ -139,8 +200,8 @@ def eval_genomes(genomes, config, env, render=False):
         genome.fitness = float(max_world_x)
 
 
-def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: str = "neat-checkpoint-",
-                  resume_from: str | None = None):
+def run_training(config_path: str, n_generations: int | None = None, time_budget_minutes: float | None = None,
+                  checkpoint_prefix: str = "neat-checkpoint-", resume_from: str | None = None):
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -166,7 +227,24 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
         eval_genomes(genomes, cfg, env)
 
     start_time = time.time()
-    winner = population.run(eval_wrapper, n_generations)
+
+    if time_budget_minutes is not None:
+        budget_seconds = time_budget_minutes * 60
+        gen_count = 0
+        while True:
+            elapsed = time.time() - start_time
+            remaining = budget_seconds - elapsed
+            if remaining <= 0:
+                print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
+                      f"{gen_count} generation(s) in this run.")
+                break
+            print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
+            population.run(eval_wrapper, 1)
+            gen_count += 1
+        winner = stats.best_genome()
+    else:
+        winner = population.run(eval_wrapper, n_generations)
+
     elapsed = time.time() - start_time
 
     env.close()
@@ -183,7 +261,23 @@ def run_training(config_path: str, n_generations: int = 50, checkpoint_prefix: s
 
 if __name__ == "__main__":
     import glob
-    import re
+
+    parser = argparse.ArgumentParser(description="NEAT training on Super Mario Bros.")
+    parser.add_argument(
+        "--minutes", "-m",
+        type=str,
+        default=None,
+        help="Max time to run for. Plain number = minutes (e.g. '30'), "
+             "or 'XXhYYm' (e.g. '1h30m'), or 'XXh' (e.g. '2h'). "
+             "If omitted, you'll be prompted interactively.",
+    )
+    args = parser.parse_args()
+
+    try:
+        time_budget_minutes = resolve_time_budget_minutes(args.minutes)
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     local_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(local_dir, "neat-config.txt")
@@ -199,12 +293,11 @@ if __name__ == "__main__":
                 latest_gen = gen
                 latest_checkpoint = f
 
-    ADDITIONAL_GENERATIONS = 50  # how many generations to add on top of the found checkpoint
-
     if latest_checkpoint:
-        print(f"Found checkpoint at generation {latest_gen}: continuing for "
-              f"{ADDITIONAL_GENERATIONS} more generations (total {latest_gen + ADDITIONAL_GENERATIONS}).")
-        run_training(config_path, n_generations=ADDITIONAL_GENERATIONS, resume_from=latest_checkpoint)
+        print(f"Found checkpoint at generation {latest_gen}: resuming and running for up to "
+              f"{time_budget_minutes:.1f} minutes.")
+        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=latest_checkpoint)
     else:
-        print("No checkpoint found: starting training from scratch (100 generations).")
-        run_training(config_path, n_generations=100)
+        print(f"No checkpoint found: starting training from scratch, running for up to "
+              f"{time_budget_minutes:.1f} minutes.")
+        run_training(config_path, time_budget_minutes=time_budget_minutes)
