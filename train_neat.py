@@ -90,6 +90,33 @@ ADDR_ENEMY_TYPE = 0x0016   # validated: enemy type per slot (e.g. 6 = Koopa Troo
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
+ADDR_POWER_STATE = 0x0756  # candidate, NOT yet validated on this ROM: 0=small, 1=big, 2=fire
+
+ADDR_LEVEL_HI = 1887  # validated (from data.json): world index (0-based)
+ADDR_LEVEL_LO = 1884  # validated (from data.json): level-within-world index (0-based)
+
+# Static world-level -> type lookup, based on the well-known original SMB1 level design:
+# castles are always the 4th level of each world, water levels are 2-2 and 7-2,
+# everything else (including underground levels, which share normal run/jump physics) is "normal".
+WATER_LEVELS = {(2, 2), (7, 2)}
+
+
+def get_level_type(world: int, level: int) -> str:
+    if level == 4:
+        return "castle"
+    if (world, level) in WATER_LEVELS:
+        return "water"
+    return "normal"
+
+
+def get_level_type_onehot(world: int, level: int) -> tuple:
+    level_type = get_level_type(world, level)
+    return (
+        1.0 if level_type == "normal" else 0.0,
+        1.0 if level_type == "water" else 0.0,
+        1.0 if level_type == "castle" else 0.0,
+    )
+
 TILE_BUFFER_BASE = 0x0500
 TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
@@ -136,7 +163,12 @@ def build_observation(ram: np.ndarray) -> list:
         mario_y / 240.0,
         x_speed / 30.0,   # rough normalization (observed max speed ~28)
         y_speed / 10.0,   # rough normalization (observed max speed ~5)
+        int(ram[ADDR_POWER_STATE]) / 2.0,  # 0=small, 1=big, 2=fire (rough normalization)
     ]
+
+    world = int(np.int8(ram[ADDR_LEVEL_HI])) + 1
+    level = int(np.int8(ram[ADDR_LEVEL_LO])) + 1
+    obs.extend(get_level_type_onehot(world, level))
 
     # Enemies: presence, dx, dy, type (5 slots x 4 values = 20)
 
