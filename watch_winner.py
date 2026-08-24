@@ -1,7 +1,15 @@
 """
-Loads the best genome saved in winner.pkl and plays it with the window
-visible, at real game speed, to see concretely what it learned
+Loads the best genome from a chosen run's winner.pkl and plays it with the
+window visible, at real game speed, to see concretely what it learned
 (and where it gets stuck).
+
+Which run to load from:
+- Pass --run <run_id_or_folder> to load a specific one directly, skipping
+  the picker entirely.
+- Otherwise, an interactive picker always appears, listing every run that
+  has a winner.pkl (including the current directory's, if present). It
+  defaults to the current directory's run if there is one, otherwise to
+  the most recently started run.
 
 On every death, prints the observation the network was actually seeing in
 the steps leading up to it (Mario's state, nearby enemies, jump-clearance
@@ -9,6 +17,8 @@ estimate, whether the jump button was pressed), to help diagnose whether a
 death is caused by bad/missing information or by the network's decision.
 """
 
+import argparse
+import glob
 import os
 import pickle
 import sys
@@ -22,9 +32,65 @@ import pyglet
 
 import stable_retro
 
-from train_neat import Tee, build_observation, debug_snapshot, outputs_to_action
+from train_neat import (
+    Tee,
+    build_observation,
+    compute_run_arrows,
+    debug_snapshot,
+    load_run_info,
+    outputs_to_action,
+    pick_run_interactively,
+    summarize_run,
+)
 
 STEPS_BEFORE_DEATH_TO_SHOW = 60
+
+
+def find_winner_dirs(root_dir: str) -> list:
+    """Finds every directory under root_dir that contains a winner.pkl."""
+    return sorted({os.path.dirname(p) for p in glob.glob(os.path.join(root_dir, "**", "winner.pkl"), recursive=True)})
+
+
+def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
+    """Figures out which winner.pkl to load, per the rules in the module
+    docstring. Exits with an error message if the request can't be satisfied."""
+    if run_arg is not None:
+        winner_dirs = find_winner_dirs(search_root)
+        match = next((d for d in winner_dirs if os.path.basename(d) == run_arg), None)
+        if match is None:
+            for d in winner_dirs:
+                info = load_run_info(d)
+                if info and info.get("run_id") == run_arg:
+                    match = d
+                    break
+        if match is None:
+            print(f"Error: no run with a winner.pkl found matching '{run_arg}'.")
+            sys.exit(1)
+        return os.path.join(match, "winner.pkl")
+
+    winner_dirs = find_winner_dirs(search_root)
+    if not winner_dirs:
+        print(f"Error: no winner.pkl found anywhere under {search_root}.")
+        sys.exit(1)
+
+    runs = [summarize_run(d, search_root) for d in winner_dirs]
+    arrows = compute_run_arrows(runs)
+
+    # Default to the winner.pkl sitting directly in the current directory (the
+    # active, not-yet-archived run), if there is one; otherwise the most
+    # recently started run.
+    cwd_index = next((i for i, r in enumerate(runs) if os.path.abspath(r["dir"]) == os.path.abspath(search_root)), None)
+    if cwd_index is not None:
+        default_index = cwd_index
+    else:
+        dated_runs = [r for r in runs if r["start_time"] is not None]
+        default_index = runs.index(max(dated_runs, key=lambda r: r["start_time"])) if dated_runs else 0
+
+    choice = pick_run_interactively(runs, arrows, default_index, last_option_label="[Cancel]")
+    if choice == len(runs):
+        print("Cancelled.")
+        sys.exit(0)
+    return os.path.join(runs[choice]["dir"], "winner.pkl")
 
 
 def print_death_trace(trace):
@@ -46,9 +112,11 @@ def print_death_trace(trace):
         print(f"    {line}")
 
 
-def main():
+def main(run_arg: str | None = None):
     local_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(local_dir, "neat-config.txt")
+
+    winner_path = resolve_winner_path(run_arg, os.getcwd())
 
     log_path = os.path.join(os.getcwd(), f"watch-{datetime.now():%Y%m%d-%H%M%S}.log")
     original_stdout = sys.stdout
@@ -59,6 +127,7 @@ def main():
 
     try:
         print(f"Logging full output to: {log_path}")
+        print(f"Loading genome from: {winner_path}")
 
         config = neat.Config(
             neat.DefaultGenome,
@@ -68,7 +137,7 @@ def main():
             config_path,
         )
 
-        with open("winner.pkl", "rb") as f:
+        with open(winner_path, "rb") as f:
             winner = pickle.load(f)
 
         net = neat.nn.FeedForwardNetwork.create(winner, config)
@@ -164,4 +233,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Watch the best genome from a training run play Super Mario Bros.")
+    parser.add_argument(
+        "--run", "-r",
+        type=str,
+        default=None,
+        help="Run ID (or folder name) to load winner.pkl from, skipping the interactive picker. "
+             "If omitted: uses winner.pkl in the current directory if present, otherwise "
+             "shows a picker over every archived run that has one.",
+    )
+    args = parser.parse_args()
+    main(args.run)
