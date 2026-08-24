@@ -43,7 +43,19 @@ from train_neat import (
     summarize_run,
 )
 
-STEPS_BEFORE_DEATH_TO_SHOW = 800
+HISTORY_BUFFER_SIZE = 200  # rolling window of raw per-frame data we keep around
+
+# Candidate RAM address: "Object Pause". Per SMB1 disassembly documentation,
+# this freezes all on-screen action except Mario and is explicitly used upon
+# dying — i.e. it goes from 0 to nonzero the instant the death sequence
+# begins, which is exactly the "collision, if any" moment we want to trace
+# back to (not yet validated on this ROM).
+ADDR_OBJECT_PAUSE = 0x0747
+
+# How many frames of context to show *before* the flag is set — i.e. the
+# actual moment control was lost (the collision) — not the death animation
+# that follows it, which carries no useful information.
+CONTEXT_STEPS_TO_SHOW = 40
 
 
 def find_winner_dirs(root_dir: str) -> list:
@@ -168,7 +180,8 @@ def main(run_arg: str | None = None):
         frame_time = 1.0 / 60.0
         max_world_x = 0
         prev_lives = info.get("lives")
-        recent_steps = deque(maxlen=STEPS_BEFORE_DEATH_TO_SHOW)
+        history = deque(maxlen=HISTORY_BUFFER_SIZE)
+        state_change_reported = False
 
         print(f"Loaded genome fitness (from training): {winner.fitness}")
         print("Controls (game window must have focus): '+' speeds up, '-' slows down, "
@@ -189,8 +202,27 @@ def main(run_arg: str | None = None):
             action = outputs_to_action(outputs)
 
             # Snapshot what the network saw and decided *before* stepping the emulator,
-            # so a death detected right after this step can be traced back to this decision.
-            recent_steps.append((step, debug_snapshot(ram), bool(action[8])))
+            # so this frame can later be shown as context leading up to a state change.
+            snap = debug_snapshot(ram)
+            history.append((step, snap, bool(action[8])))
+
+            player_state = int(ram[ADDR_OBJECT_PAUSE])
+            if player_state == 0:
+                state_change_reported = False
+            elif not state_change_reported:
+                # The instant Object Pause is set (nonzero) — per the docs this
+                # happens right when the death sequence begins, freezing
+                # everything except Mario's death-jump animation. The
+                # collision, if any, is at or right before the last frame
+                # shown here, not in this frame or after.
+                state_change_reported = True
+                context = [e for e in history if e[0] < step][-CONTEXT_STEPS_TO_SHOW:]
+                print(f"\n[step {step}] Object Pause flag set (0x0747 = {player_state}) — "
+                      f"death sequence likely starting now. Steps leading up to this moment:")
+                if context:
+                    print_death_trace(context)
+                else:
+                    print("  (not enough history before this point to show)")
 
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
@@ -201,9 +233,9 @@ def main(run_arg: str | None = None):
 
             lives = info.get("lives")
             if lives is not None and prev_lives is not None and lives < prev_lives:
-                print(f"[step {step}] Mario lost a life. "
+                print(f"[step {step}] Mario lost a life (registered by the game here; "
+                      f"the actual collision was reported above, near the start of the fall). "
                       f"Position reached: {world_x} (max so far: {max_world_x})")
-                print_death_trace(recent_steps)
             prev_lives = lives
 
             env.render()
