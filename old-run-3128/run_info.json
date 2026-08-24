@@ -2,6 +2,6 @@
   "run_id": "run-20260824-162200",
   "parent_run_id": "run-20260824-123012",
   "start_time": "2026-08-24T16:22:00.650981+02:00",
-  "end_time": null,
-  "best_fitness": null
+  "end_time": "2026-08-24T18:22:33.251885+02:00",
+  "best_fitness": 3128.0
 }
