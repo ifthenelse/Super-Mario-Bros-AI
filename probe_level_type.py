@@ -4,6 +4,10 @@ Validates:
   2=underground, 3=castle in the classic SMB disassembly)
 - a "control locked" state candidate (0x0770), to check during cutscene-like
   moments (entering a pipe, climbing the flagpole) when Mario can't be controlled
+- the "Object Pause" candidate (0x0747), reportedly set nonzero the instant
+  Mario's death sequence begins (freezing all other on-screen action) — walk
+  Mario into an enemy on purpose and watch for the ">>> object_pause CHANGED"
+  line to confirm whether this is a reliable death-onset signal
 
 This probe gives you MANUAL keyboard control over Mario, plus quick-load
 shortcuts to jump straight into different level types using the savestates
@@ -33,7 +37,8 @@ import pyglet
 import stable_retro
 
 ADDR_AREA_TYPE = 0x0764     # candidate, found unreliable: 0x0764 never changed across real level transitions
-ADDR_ENGINE_STATE = 0x0770  # candidate: internal game engine state/subroutine
+ADDR_ENGINE_STATE = 0x0770  # candidate: internal game engine state/subroutine (also cited as "Gameplay Mode")
+ADDR_OBJECT_PAUSE = 0x0747  # candidate: "Object Pause" — freezes all action except Mario, used upon dying
 ADDR_LEVEL_HI = 1887        # validated (from data.json): world index
 ADDR_LEVEL_LO = 1884        # validated (from data.json): level-within-world index
 
@@ -126,6 +131,7 @@ def main():
     print_every = 60  # once per second at normal speed
 
     step = 0
+    prev_object_pause = None
     while True:
         step_start = time.time()
         env = shared["env"]
@@ -154,13 +160,19 @@ def main():
 
         area_type = int(ram[ADDR_AREA_TYPE])
         engine_state = int(ram[ADDR_ENGINE_STATE])
+        object_pause = int(ram[ADDR_OBJECT_PAUSE])
         world = int(np.int8(ram[ADDR_LEVEL_HI])) + 1
         level = int(np.int8(ram[ADDR_LEVEL_LO])) + 1
 
         if step % print_every == 0 or shared["print_now"]:
             shared["print_now"] = False
             print(f"[step {step:5d}] world-level={world}-{level}  area_type={area_type}  "
-                  f"engine_state={engine_state}  lives={info.get('lives')}")
+                  f"engine_state={engine_state}  object_pause={object_pause}  lives={info.get('lives')}")
+
+        if object_pause != prev_object_pause:
+            print(f"  >>> [step {step:5d}] object_pause CHANGED: {prev_object_pause} -> {object_pause} "
+                  f"(world-level={world}-{level}, lives={info.get('lives')})")
+        prev_object_pause = object_pause
 
         env.render()
 
