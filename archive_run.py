@@ -1,7 +1,7 @@
 """
-Archives the current training run (checkpoints + winner.pkl) into a new
-folder, so a fresh training run can start from a clean state without
-manually moving files around.
+Archives the current training run (checkpoints, winner.pkl, run_info.json,
+and training log files) into a new folder, so a fresh training run can
+start from a clean state without manually moving files around.
 
 The destination folder is named after the best fitness found in the
 existing winner.pkl (e.g. "old-run-3112"), matching the naming convention
@@ -23,9 +23,13 @@ def archive_run():
     winner_exists = os.path.exists(winner_path)
     run_info_path = os.path.join(local_dir, "run_info.json")
     run_info_exists = os.path.exists(run_info_path)
+    # Training logs from this lineage (possibly more than one, if the run was
+    # resumed across several sessions before being archived)
+    log_files = glob.glob(os.path.join(local_dir, "run-*.log"))
 
-    if not checkpoint_files and not winner_exists and not run_info_exists:
-        print("Nothing to archive: no checkpoints, winner.pkl, or run_info.json found in the current directory.")
+    if not checkpoint_files and not winner_exists and not run_info_exists and not log_files:
+        print("Nothing to archive: no checkpoints, winner.pkl, run_info.json, or run logs found "
+              "in the current directory.")
         return
 
     fitness_label = None
@@ -62,6 +66,9 @@ def archive_run():
     if run_info_exists:
         shutil.move(run_info_path, dest_dir)
         moved.append("run_info.json")
+    for f in log_files:
+        shutil.move(f, dest_dir)
+        moved.append(os.path.basename(f))
 
     print(f"Archived {len(moved)} file(s) to {dest_dir}:")
     for name in sorted(moved):
