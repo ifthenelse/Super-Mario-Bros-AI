@@ -1,7 +1,7 @@
 {
-  "run_id": "run-20260824-123012",
-  "parent_run_id": "old-run-3126",
-  "start_time": "2026-08-24T12:30:12.211298+02:00",
-  "end_time": "2026-08-24T14:30:26.390068+02:00",
-  "best_fitness": 3127.0
+  "run_id": "run-20260824-162200",
+  "parent_run_id": "run-20260824-123012",
+  "start_time": "2026-08-24T16:22:00.650981+02:00",
+  "end_time": null,
+  "best_fitness": null
 }
