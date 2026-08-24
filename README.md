@@ -6,14 +6,14 @@ The project uses [stable-retro](https://github.com/Farama-Foundation/stable-retr
 
 ## How it works
 
-Each genome in the population (a candidate neural network) plays one episode of Super Mario Bros. The observation fed to the network is built by reading the emulator's RAM directly:
+Each genome in the population (a candidate neural network) plays one episode of Super Mario Bros — which can span multiple consecutive levels if Mario clears them, since the episode only ends on game over or after getting stuck too long. The observation fed to the network is built by reading the emulator's RAM directly:
 
 - Mario's Y position, velocity (X/Y), and power-up state (small/big/fire)
-- Presence, relative position, and type of nearby enemies (up to 5 slots)
-- A local grid of terrain tiles (solid blocks, pits) around Mario
 - The current level's type (normal, water, or castle), derived from the world/level number via a static lookup table
+- Presence, relative position, type, jump-over clearance, and estimated time-to-impact for nearby enemies (up to 5 slots)
+- A local grid of terrain tiles (solid blocks, pits) around Mario
 
-The network's output is 9 values, one per NES controller button. The **fitness** of each genome is the maximum distance reached before dying or getting stuck (across the whole episode, which can span multiple consecutive levels if Mario clears them). Successive generations are created by selecting, mutating, and crossing over the best genomes.
+The network's output is 9 values, one per NES controller button. The **fitness** of each genome is the maximum distance reached, minus a small penalty for every life lost during the episode — so two genomes reaching similar distance aren't treated as equivalent if one got there by recklessly dying repeatedly. Successive generations are created by selecting, mutating, and crossing over the best genomes.
 
 ## Requirements
 
@@ -70,9 +70,9 @@ The network's output is 9 values, one per NES controller button. The **fitness**
 | `ram_probe_advanced.py` | Validates the terrain tile grid, Mario's speed, and enemy type. Has keyboard controls in the game window: `+`/`-` for emulation speed, `0` to reset it, `SPACE` to pause/resume                                                     |
 | `probe_level_type.py`   | Gives you **manual keyboard control** over Mario (arrows, `Z` jump, `X` run/fire), plus quick-load shortcuts (`1`/`2`/`3`) to jump straight into different level types, to validate world/level detection against the on-screen HUD |
 | `neat-config.txt`       | NEAT configuration: network input/output size, population size, mutation rates, speciation rules                                                                                                                                    |
-| `train_neat.py`         | Training script: builds the observation from RAM, evaluates each genome, evolves the population for a chosen amount of time. Automatically resumes from the latest checkpoint if one is present                                     |
-| `watch_winner.py`       | Loads the best saved genome (`winner.pkl`) and plays it with the window visible, at real game speed                                                                                                                                 |
-| `archive_run.py`        | Moves the current checkpoints and `winner.pkl` into a new folder (named after the reached fitness), so you can start a fresh run without losing previous results                                                                    |
+| `train_neat.py`         | Training script. See "Training" below for how run selection, time budgets, and logging work                                                                                                                                         |
+| `watch_winner.py`       | Loads the best genome from a chosen run and plays it with the window visible, at real game speed, logging a detailed trace of every death                                                                                           |
+| `archive_run.py`        | Moves the current run's checkpoints, `winner.pkl`, `run_info.json`, and training log into a new folder (named after the reached fitness), so you can start a fresh run without losing previous results                              |
 
 ## Tutorial: running the project step by step
 
@@ -96,18 +96,21 @@ python probe_level_type.py
 
 Compare the values printed to the console with what you see on screen (position, speed, tile grid, enemy type, world-level).
 
-### 3. Start training
+### 3. Train
 
 ```bash
 python train_neat.py
 ```
 
-The script evaluates 150 genomes per generation, printing average fitness, best fitness, number of active species, and stagnation stats to the console. Every 5 generations it saves a checkpoint (`neat-checkpoint-N`), which lets you resume training later instead of starting over — just rerun `python train_neat.py` and it will be detected automatically.
+**Runs and checkpoints.** Every invocation of `train_neat.py` is a "run": it writes a `run_info.json` (run ID, parent run ID, start/end time, best fitness) alongside its checkpoints, and saves a checkpoint every 5 generations. On startup, unless you pass `--run`, a full-screen picker (arrow keys to move, `SPACE`/`ENTER` to select, `ESC` to start fresh) lists every run found under the current directory — including archived ones in `old-run-*` folders — showing each one's fitness and a ▲/=/▼ arrow comparing it to its parent run. It waits 15 seconds for input before auto-selecting a sensible default, then resumes training from there using the **current** `neat-config.txt` (not whatever settings were in effect when that checkpoint was saved).
 
-**How long it runs for**: instead of a fixed number of generations, the script runs for a time budget you choose, then stops and saves the best genome found so far.
+- Resume a specific run directly, skipping the picker: `python train_neat.py --run run-20260824-162200` (also accepts a folder name like `old-run-3128`)
+- Force a fresh start even if runs exist: `python train_neat.py --run none`
+
+**Time budget.** Instead of a fixed number of generations, training runs for a time budget you choose, then stops and saves the best genome found so far.
 
 - Pass it directly: `python train_neat.py --minutes 30` (or `-m 1h30m`, or `-m 2h`)
-- Or leave it out: it will prompt `The script will run for 60 minutes. Type a value in minutes if you want to change it: ` and wait up to 15 seconds for you to type a new value before defaulting to 60 minutes
+- Or leave it out: you'll be prompted `The script will run for 60 minutes. Type a value in minutes if you want to change it: ` and have 15 seconds to type a new value before it defaults to 60
 
 To prevent macOS from sleeping during a long run, prefix the command with `caffeinate -i`:
 
@@ -115,21 +118,24 @@ To prevent macOS from sleeping during a long run, prefix the command with `caffe
 caffeinate -i python train_neat.py -m 1h
 ```
 
+**Logging.** Every run writes its full console output (including NEAT's own generation-by-generation stats and any warnings) to a `<run_id>.log` file in the current directory, in addition to showing it live — useful since training logs are often far longer than a terminal's scrollback buffer.
+
 ### 4. Watch the result
 
 ```bash
 python watch_winner.py
 ```
 
-Loads `winner.pkl` (the best genome found) and plays it in real time, printing to the console where and how Mario loses each life — useful for understanding the training's limitations and deciding how to improve the observation, reward, or configuration.
+Uses the same run picker as `train_neat.py` (pass `--run <id_or_folder>` to skip it). Plays the chosen `winner.pkl` in real time, with the same speed/pause controls as the probe scripts (`+`/`-`/`0`/`SPACE`/`ENTER`). On every death it prints a detailed trace of the preceding steps — Mario's position/speed, the nearest enemy's distance and jump-clearance, whether the jump button was pressed, and the terrain tile grid at the moment of death — also saved to a `watch-<timestamp>.log` file.
 
 ### 5. Iterate
 
 If training plateaus (the best fitness doesn't improve for many generations):
 
-- Check `watch_winner.py` to understand _where_ and _why_ Mario dies
-- If the problem is in the observation (e.g. it doesn't "see" a certain obstacle, or a certain game state), add the missing information to `build_observation()` in `train_neat.py` and update `num_inputs` in `neat-config.txt` accordingly — this requires starting over, since it changes the network's structure
-- If the problem is that the population isn't exploring enough (same fitness stuck for dozens of generations), reduce `elitism` / `species_elitism` and increase the mutation rates in `neat-config.txt`. A high `elitism` value can effectively "freeze" the best genome unchanged across generations, which looks like a plateau but is really the elite individual never being allowed to mutate
+- Use `watch_winner.py`'s death traces to understand _where_ and _why_ Mario dies — e.g. whether it's a missing/unclear observation, a genuinely impossible jump, or the network simply "freezing" (repeating the exact same output for many consecutive frames)
+- If the problem is in the observation, add the missing information to `build_observation()` in `train_neat.py` and update `num_inputs` in `neat-config.txt` accordingly — this requires starting over, since it changes the network's structure
+- If the problem is that the population isn't exploring enough (same fitness stuck for dozens of generations even across different lineages), reduce `elitism` / `species_elitism` and increase the mutation rates in `neat-config.txt`. A high `elitism` value can effectively "freeze" the best genome (or the best species) unchanged across generations, which looks like a plateau but is really the elite individual never being allowed to mutate
+- If the death traces show reckless or frozen behavior rather than a genuine impossibility, consider adjusting the fitness shaping (`LIFE_LOST_PENALTY`) or the stuck-episode cutoff (`STUCK_STEPS_LIMIT`) in `train_neat.py`, so patience/caution near danger has a real chance to be selected for
 
 Before starting a new run with a changed network structure, archive the current one instead of overwriting it:
 
@@ -147,7 +153,12 @@ Not all RAM addresses used in this project carry the same level of confidence:
 
 If a new feature you add to the observation doesn't seem to help (or actively hurts) training, an unvalidated address is a reasonable first suspect.
 
+## Known gotchas
+
+- **Resuming and node-ID collisions**: `train_neat.py` rebuilds the population from a checkpoint using the _current_ config rather than the one frozen inside the checkpoint file (so config changes actually take effect on resume). This required a manual fix to NEAT's internal node-ID counter to avoid collisions between genomes carried over from different lineages — already handled in `restore_checkpoint_with_config()`, but worth knowing about if you see `AssertionError` deep inside `neat/genome.py` after modifying that function.
+- **`curses` picker requires a real terminal**: the run picker in `train_neat.py`/`watch_winner.py` uses Python's built-in `curses` module (no install needed on macOS/Linux). It needs an interactive terminal — it won't work if output is redirected to a file or piped.
+
 ## Notes
 
 - ROMs are copyrighted material: source them yourself from a legally owned copy of the game, and don't commit them to public repositories.
-- Checkpoint files (`neat-checkpoint-*`) and `winner.pkl` are pickle binaries, often large — consider excluding them from version control (`.gitignore`) if the repository has a public remote.
+- Checkpoint files (`neat-checkpoint-*`), `winner.pkl`, and log files are often large — consider excluding them from version control (`.gitignore`) if the repository has a public remote.
