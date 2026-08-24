@@ -30,6 +30,24 @@ DEFAULT_TIME_BUDGET_MINUTES = 60.0
 PROMPT_TIMEOUT_SECONDS = 15
 
 
+class Tee:
+    """Writes everything to multiple streams at once (e.g. the real console
+    and a log file), so training output stays visible live in the terminal
+    while also being saved in full to a file that can be copied/searched
+    afterwards without hitting the terminal's scrollback limit."""
+
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+
 def parse_duration_to_minutes(raw: str) -> float:
     """Parses a duration string into minutes.
 
@@ -224,6 +242,58 @@ def build_observation(ram: np.ndarray) -> list:
             obs.append(float(get_tile(ram, mario_world_x, mario_y, col_offset, row_offset)))
 
     return obs
+
+
+def debug_snapshot(ram: np.ndarray) -> dict:
+    """Human-readable version of build_observation(), for diagnosing exactly
+    what the network 'saw' at a given moment (e.g. right before a death)."""
+    mario_x_screen = int(ram[ADDR_X_SCREEN])
+    mario_x_page = int(ram[ADDR_X_PAGE])
+    mario_world_x = mario_x_page * 256 + mario_x_screen
+    mario_y = int(ram[ADDR_Y_POS])
+
+    x_speed = int(np.int8(ram[ADDR_X_SPEED]))
+    y_speed = int(np.int8(ram[ADDR_Y_SPEED]))
+
+    world = int(np.int8(ram[ADDR_LEVEL_HI])) + 1
+    level = int(np.int8(ram[ADDR_LEVEL_LO])) + 1
+
+    enemies = []
+    for i in range(N_ENEMY_SLOTS):
+        if int(ram[ADDR_ENEMY_DRAWN + i]):
+            enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
+            enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
+            enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
+            dx = enemy_x - mario_x_screen
+            dy = enemy_y - mario_y
+            enemy_world_x = mario_world_x + dx
+            clearance = enemy_ceiling_clearance(ram, enemy_world_x, enemy_y)
+            time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
+            enemies.append({
+                "slot": i, "dx": dx, "dy": dy, "type": enemy_type,
+                "ceiling_clearance": clearance, "time_to_enemy": time_to_enemy,
+            })
+
+    tile_grid_lines = []
+    for row_offset in TILE_ROW_OFFSETS:
+        line = ""
+        for col_offset in TILE_COL_OFFSETS:
+            if row_offset == 0 and col_offset == 0:
+                line += "M"
+            else:
+                line += "X" if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset) else "."
+        tile_grid_lines.append(line)
+
+    return {
+        "mario_y": mario_y,
+        "x_speed": x_speed,
+        "y_speed": y_speed,
+        "power_state": int(ram[ADDR_POWER_STATE]),
+        "world_level": f"{world}-{level}",
+        "level_type": get_level_type(world, level),
+        "enemies": enemies,
+        "tile_grid": tile_grid_lines,
+    }
 
 
 def outputs_to_action(outputs) -> np.ndarray:
@@ -521,67 +591,82 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
     run_start_time = datetime.now().astimezone()
     run_id = generate_run_id()
 
-    parent_run_id = None
-    if resume_from:
-        parent_dir = os.path.dirname(os.path.abspath(resume_from)) or run_dir
-        parent_info = load_run_info(parent_dir)
-        parent_run_id = parent_info["run_id"] if parent_info else os.path.basename(parent_dir)
-        print(f"Resuming training from checkpoint: {resume_from} (using the current neat-config.txt)")
-        population = restore_checkpoint_with_config(resume_from, config)
-    else:
-        population = neat.Population(config)
+    log_path = os.path.join(run_dir, f"{run_id}.log")
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    log_file = open(log_path, "w")
+    sys.stdout = Tee(original_stdout, log_file)
+    sys.stderr = Tee(original_stderr, log_file)
 
-    write_run_info(run_dir, run_id, parent_run_id, run_start_time)
-
-    population.add_reporter(neat.StdOutReporter(True))
-    stats = neat.StatisticsReporter()
-    population.add_reporter(stats)
-    population.add_reporter(neat.Checkpointer(5, filename_prefix=checkpoint_prefix))
-
-    env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
-
-    def eval_wrapper(genomes, cfg):
-        eval_genomes(genomes, cfg, env)
-
-    start_time = time.time()
-    winner = None
+    print(f"Logging full output to: {log_path}")
 
     try:
-        if time_budget_minutes is not None:
-            budget_seconds = time_budget_minutes * 60
-            gen_count = 0
-            while True:
-                elapsed = time.time() - start_time
-                remaining = budget_seconds - elapsed
-                if remaining <= 0:
-                    print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
-                          f"{gen_count} generation(s) in this run.")
-                    break
-                print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
-                population.run(eval_wrapper, 1)
-                gen_count += 1
-            winner = stats.best_genome()
+        parent_run_id = None
+        if resume_from:
+            parent_dir = os.path.dirname(os.path.abspath(resume_from)) or run_dir
+            parent_info = load_run_info(parent_dir)
+            parent_run_id = parent_info["run_id"] if parent_info else os.path.basename(parent_dir)
+            print(f"Resuming training from checkpoint: {resume_from} (using the current neat-config.txt)")
+            population = restore_checkpoint_with_config(resume_from, config)
         else:
-            winner = population.run(eval_wrapper, n_generations)
-    finally:
-        env.close()
+            population = neat.Population(config)
+
+        write_run_info(run_dir, run_id, parent_run_id, run_start_time)
+
+        population.add_reporter(neat.StdOutReporter(True))
+        stats = neat.StatisticsReporter()
+        population.add_reporter(stats)
+        population.add_reporter(neat.Checkpointer(5, filename_prefix=checkpoint_prefix))
+
+        env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
+
+        def eval_wrapper(genomes, cfg):
+            eval_genomes(genomes, cfg, env)
+
+        start_time = time.time()
+        winner = None
+
         try:
-            best_so_far = stats.best_genome().fitness
-        except Exception:
-            best_so_far = None
-        write_run_info(run_dir, run_id, parent_run_id, run_start_time,
-                        end_time=datetime.now().astimezone(), best_fitness=best_so_far)
+            if time_budget_minutes is not None:
+                budget_seconds = time_budget_minutes * 60
+                gen_count = 0
+                while True:
+                    elapsed = time.time() - start_time
+                    remaining = budget_seconds - elapsed
+                    if remaining <= 0:
+                        print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
+                              f"{gen_count} generation(s) in this run.")
+                        break
+                    print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
+                    population.run(eval_wrapper, 1)
+                    gen_count += 1
+                winner = stats.best_genome()
+            else:
+                winner = population.run(eval_wrapper, n_generations)
+        finally:
+            env.close()
+            try:
+                best_so_far = stats.best_genome().fitness
+            except Exception:
+                best_so_far = None
+            write_run_info(run_dir, run_id, parent_run_id, run_start_time,
+                            end_time=datetime.now().astimezone(), best_fitness=best_so_far)
 
-    elapsed = time.time() - start_time
+        elapsed = time.time() - start_time
 
-    print(f"\nTraining completed in {elapsed / 60:.1f} minutes.")
-    print(f"Best genome fitness: {winner.fitness}")
+        print(f"\nTraining completed in {elapsed / 60:.1f} minutes.")
+        print(f"Best genome fitness: {winner.fitness}")
 
-    with open("winner.pkl", "wb") as f:
-        pickle.dump(winner, f)
-    print("Best genome saved to winner.pkl")
+        with open("winner.pkl", "wb") as f:
+            pickle.dump(winner, f)
+        print("Best genome saved to winner.pkl")
+        print(f"Full log saved to: {log_path}")
 
-    return winner, stats
+        return winner, stats
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+        log_file.close()
 
 
 if __name__ == "__main__":
