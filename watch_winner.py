@@ -43,7 +43,7 @@ from train_neat import (
     summarize_run,
 )
 
-STEPS_BEFORE_DEATH_TO_SHOW = 60
+STEPS_BEFORE_DEATH_TO_SHOW = 800
 
 
 def find_winner_dirs(root_dir: str) -> list:
