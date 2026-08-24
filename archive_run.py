@@ -21,9 +21,11 @@ def archive_run():
     checkpoint_files = glob.glob(os.path.join(local_dir, "neat-checkpoint-*"))
     winner_path = os.path.join(local_dir, "winner.pkl")
     winner_exists = os.path.exists(winner_path)
+    run_info_path = os.path.join(local_dir, "run_info.json")
+    run_info_exists = os.path.exists(run_info_path)
 
-    if not checkpoint_files and not winner_exists:
-        print("Nothing to archive: no checkpoints or winner.pkl found in the current directory.")
+    if not checkpoint_files and not winner_exists and not run_info_exists:
+        print("Nothing to archive: no checkpoints, winner.pkl, or run_info.json found in the current directory.")
         return
 
     fitness_label = None
@@ -57,6 +59,9 @@ def archive_run():
     if winner_exists:
         shutil.move(winner_path, dest_dir)
         moved.append("winner.pkl")
+    if run_info_exists:
+        shutil.move(run_info_path, dest_dir)
+        moved.append("run_info.json")
 
     print(f"Archived {len(moved)} file(s) to {dest_dir}:")
     for name in sorted(moved):

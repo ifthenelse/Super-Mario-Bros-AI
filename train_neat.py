@@ -8,12 +8,18 @@ Fitness is the maximum distance reached in the level.
 """
 
 import argparse
+import glob
+import gzip
+import itertools
+import json
 import os
 import pickle
+import random
 import re
 import select
 import sys
 import time
+from datetime import datetime
 
 import neat
 import numpy as np
@@ -261,6 +267,246 @@ def eval_genomes(genomes, config, env, render=False):
         genome.fitness = float(max_world_x)
 
 
+def find_checkpoints(root_dir: str) -> list:
+    """Recursively finds all NEAT checkpoint files under root_dir (including subfolders)."""
+    pattern = os.path.join(root_dir, "**", "neat-checkpoint-*")
+    return sorted(glob.glob(pattern, recursive=True))
+
+
+def read_checkpoint_summary(filename: str) -> dict | None:
+    """Reads just enough from a checkpoint file to get its best fitness so
+    far, without needing a matching neat-config.txt. Returns None if the
+    file can't be read (e.g. corrupted or incompatible)."""
+    try:
+        with gzip.open(filename) as f:
+            _generation, _config, population, _species_set, _rndstate = pickle.load(f)
+    except Exception as e:
+        print(f"Warning: could not read checkpoint '{filename}' ({e}); skipping it.")
+        return None
+
+    fitnesses = [g.fitness for g in population.values() if g.fitness is not None]
+    return {"best_fitness": max(fitnesses) if fitnesses else None}
+
+
+RUN_INFO_FILENAME = "run_info.json"
+
+
+def generate_run_id() -> str:
+    return datetime.now().astimezone().strftime("run-%Y%m%d-%H%M%S")
+
+
+def load_run_info(run_dir: str) -> dict | None:
+    path = os.path.join(run_dir, RUN_INFO_FILENAME)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
+                    start_time: datetime, end_time: datetime | None = None,
+                    best_fitness: float | None = None):
+    info = {
+        "run_id": run_id,
+        "parent_run_id": parent_run_id,
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat() if end_time else None,
+        "best_fitness": best_fitness,
+    }
+    with open(os.path.join(run_dir, RUN_INFO_FILENAME), "w") as f:
+        json.dump(info, f, indent=2)
+
+
+def find_run_dirs(root_dir: str) -> list:
+    """Finds every directory under root_dir (root_dir itself included) that
+    contains at least one NEAT checkpoint file — i.e. one training run."""
+    dirs = {os.path.dirname(p) for p in find_checkpoints(root_dir)}
+    return sorted(dirs)
+
+
+def summarize_run(run_dir: str, root_dir: str) -> dict:
+    """Builds a one-line-worthy summary of a training run: identity,
+    parentage, timing, and best fitness reached. Falls back to inferring
+    missing info (legacy runs predating run_info.json) from the checkpoint
+    files themselves."""
+    checkpoint_files = glob.glob(os.path.join(run_dir, "neat-checkpoint-*"))
+    latest_checkpoint, latest_gen = None, -1
+    for f in checkpoint_files:
+        m = re.search(r"neat-checkpoint-(\d+)$", f)
+        if m:
+            gen = int(m.group(1))
+            if gen > latest_gen:
+                latest_gen, latest_checkpoint = gen, f
+
+    info = load_run_info(run_dir)
+
+    if info:
+        run_id = info["run_id"]
+        parent_run_id = info.get("parent_run_id")
+        start_time = datetime.fromisoformat(info["start_time"]) if info.get("start_time") else None
+        end_time = datetime.fromisoformat(info["end_time"]) if info.get("end_time") else None
+        best_fitness = info.get("best_fitness")
+    else:
+        run_id = "current" if os.path.abspath(run_dir) == os.path.abspath(root_dir) else os.path.basename(run_dir)
+        parent_run_id = None
+        start_time = None
+        end_time = None
+        best_fitness = None
+
+    if best_fitness is None and latest_checkpoint:
+        checkpoint_summary = read_checkpoint_summary(latest_checkpoint)
+        best_fitness = checkpoint_summary["best_fitness"] if checkpoint_summary else None
+
+    if start_time is None and checkpoint_files:
+        oldest = min(checkpoint_files, key=os.path.getmtime)
+        start_time = datetime.fromtimestamp(os.path.getmtime(oldest)).astimezone()
+
+    if end_time is None and latest_checkpoint:
+        end_time = datetime.fromtimestamp(os.path.getmtime(latest_checkpoint)).astimezone()
+
+    return {
+        "run_id": run_id,
+        "parent_run_id": parent_run_id,
+        "start_time": start_time,
+        "end_time": end_time,
+        "best_fitness": best_fitness,
+        "resume_checkpoint": latest_checkpoint,
+        "generation": latest_gen if latest_gen >= 0 else None,
+        "dir": run_dir,
+    }
+
+
+def compute_run_arrows(runs: list) -> dict:
+    """Compares each run's best fitness to its parent run's best fitness
+    (when the parent is also in the list), returning {run_id: '▲'|'='|'▼'|' '}."""
+    by_id = {r["run_id"]: r for r in runs}
+    arrows = {}
+    for r in runs:
+        parent = by_id.get(r["parent_run_id"]) if r["parent_run_id"] else None
+        if parent is None or parent["best_fitness"] is None or r["best_fitness"] is None:
+            arrows[r["run_id"]] = " "
+        elif r["best_fitness"] > parent["best_fitness"]:
+            arrows[r["run_id"]] = "▲"
+        elif r["best_fitness"] < parent["best_fitness"]:
+            arrows[r["run_id"]] = "▼"
+        else:
+            arrows[r["run_id"]] = "="
+    return arrows
+
+
+def format_duration(start: datetime | None, end: datetime | None) -> str:
+    if start is None or end is None:
+        return "n/a"
+    seconds = int((end - start).total_seconds())
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def format_run_line(r: dict, arrow: str) -> str:
+    fitness_str = f"{r['best_fitness']:.0f}" if r["best_fitness"] is not None else "n/a"
+    start_str = r["start_time"].strftime("%Y-%m-%d %H:%M %Z") if r["start_time"] else "n/a"
+    end_str = r["end_time"].strftime("%Y-%m-%d %H:%M %Z") if r["end_time"] else "in progress"
+    duration_str = format_duration(r["start_time"], r["end_time"])
+    parent_str = r["parent_run_id"] or "-"
+    return (f"{arrow} {r['run_id']:<20} parent={parent_str:<20} "
+            f"start={start_str:<20} end={end_str:<20} "
+            f"dur={duration_str:<8} fitness={fitness_str}")
+
+
+def pick_run_interactively(runs: list, arrows: dict, default_index: int) -> int:
+    """Full-screen arrow-key picker (curses). Up/Down to move, SPACE/ENTER to
+    select, ESC to pick 'fresh start'. Auto-selects default_index if no key
+    is pressed at all within PROMPT_TIMEOUT_SECONDS; once any key is pressed,
+    the timeout is cancelled and it waits for an explicit choice."""
+    import curses
+
+    def _inner(stdscr):
+        curses.curs_set(0)
+        stdscr.nodelay(True)
+        current = default_index
+        fresh_idx = len(runs)
+        n_options = len(runs) + 1
+        deadline = time.time() + PROMPT_TIMEOUT_SECONDS
+        interacted = False
+
+        while True:
+            stdscr.erase()
+            stdscr.addstr(0, 0, "Select a run to resume from  (up/down: move, SPACE/ENTER: select, ESC: fresh start)")
+            if not interacted:
+                remaining = max(0.0, deadline - time.time())
+                stdscr.addstr(1, 0, f"Auto-selecting the default in {remaining:4.1f}s if no input...")
+            for i, r in enumerate(runs):
+                marker = "> " if i == current else "  "
+                attr = curses.A_REVERSE if i == current else curses.A_NORMAL
+                tag = " (default)" if i == default_index else ""
+                line = f"{marker}{format_run_line(r, arrows.get(r['run_id'], ' '))}{tag}"
+                try:
+                    stdscr.addstr(3 + i, 0, line, attr)
+                except curses.error:
+                    pass
+            marker = "> " if current == fresh_idx else "  "
+            attr = curses.A_REVERSE if current == fresh_idx else curses.A_NORMAL
+            try:
+                stdscr.addstr(3 + fresh_idx + 1, 0, f"{marker}[Start a fresh training run]", attr)
+            except curses.error:
+                pass
+            stdscr.refresh()
+
+            if not interacted and time.time() > deadline:
+                return default_index
+
+            stdscr.timeout(150)
+            key = stdscr.getch()
+            if key == -1:
+                continue
+            interacted = True
+            if key in (curses.KEY_UP, ord('k')):
+                current = (current - 1) % n_options
+            elif key in (curses.KEY_DOWN, ord('j')):
+                current = (current + 1) % n_options
+            elif key in (10, 13, curses.KEY_ENTER, ord(' ')):
+                return current
+            elif key == 27:
+                return fresh_idx
+
+    return curses.wrapper(_inner)
+
+
+def restore_checkpoint_with_config(filename: str, config: neat.Config) -> neat.Population:
+    """Like neat.Checkpointer.restore_checkpoint, but rebuilds the population
+    using the given (freshly loaded) config instead of the one frozen inside
+    the checkpoint file. Without this, resuming from a checkpoint silently
+    keeps whatever mutation rates, elitism, etc. were in effect when that
+    checkpoint was saved, ignoring any changes since made to neat-config.txt."""
+    with gzip.open(filename) as f:
+        generation, _old_config, population, species_set, rndstate = pickle.load(f)
+    random.setstate(rndstate)
+    pop = neat.Population(config, (population, species_set, generation))
+
+    # A freshly-built config's node-id counter starts from scratch. Left as-is,
+    # it would eventually hand out a node ID that's already in use by some
+    # genome carried over from the checkpoint (different lineages can have
+    # very different node ID ranges), crashing with an AssertionError deep
+    # inside a later mutation. Seed it past the highest node ID already in
+    # use anywhere in the restored population to avoid that collision.
+    max_node_id = -1
+    for genome in population.values():
+        if genome.nodes:
+            max_node_id = max(max_node_id, max(genome.nodes.keys()))
+    if max_node_id >= 0:
+        config.genome_config.node_indexer = itertools.count(max_node_id + 1)
+
+    return pop
+
+
 def run_training(config_path: str, n_generations: int | None = None, time_budget_minutes: float | None = None,
                   checkpoint_prefix: str = "neat-checkpoint-", resume_from: str | None = None):
     config = neat.Config(
@@ -271,11 +517,21 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         config_path,
     )
 
+    run_dir = os.getcwd()
+    run_start_time = datetime.now().astimezone()
+    run_id = generate_run_id()
+
+    parent_run_id = None
     if resume_from:
-        print(f"Resuming training from checkpoint: {resume_from}")
-        population = neat.Checkpointer.restore_checkpoint(resume_from)
+        parent_dir = os.path.dirname(os.path.abspath(resume_from)) or run_dir
+        parent_info = load_run_info(parent_dir)
+        parent_run_id = parent_info["run_id"] if parent_info else os.path.basename(parent_dir)
+        print(f"Resuming training from checkpoint: {resume_from} (using the current neat-config.txt)")
+        population = restore_checkpoint_with_config(resume_from, config)
     else:
         population = neat.Population(config)
+
+    write_run_info(run_dir, run_id, parent_run_id, run_start_time)
 
     population.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
@@ -288,27 +544,35 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         eval_genomes(genomes, cfg, env)
 
     start_time = time.time()
+    winner = None
 
-    if time_budget_minutes is not None:
-        budget_seconds = time_budget_minutes * 60
-        gen_count = 0
-        while True:
-            elapsed = time.time() - start_time
-            remaining = budget_seconds - elapsed
-            if remaining <= 0:
-                print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
-                      f"{gen_count} generation(s) in this run.")
-                break
-            print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
-            population.run(eval_wrapper, 1)
-            gen_count += 1
-        winner = stats.best_genome()
-    else:
-        winner = population.run(eval_wrapper, n_generations)
+    try:
+        if time_budget_minutes is not None:
+            budget_seconds = time_budget_minutes * 60
+            gen_count = 0
+            while True:
+                elapsed = time.time() - start_time
+                remaining = budget_seconds - elapsed
+                if remaining <= 0:
+                    print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
+                          f"{gen_count} generation(s) in this run.")
+                    break
+                print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
+                population.run(eval_wrapper, 1)
+                gen_count += 1
+            winner = stats.best_genome()
+        else:
+            winner = population.run(eval_wrapper, n_generations)
+    finally:
+        env.close()
+        try:
+            best_so_far = stats.best_genome().fitness
+        except Exception:
+            best_so_far = None
+        write_run_info(run_dir, run_id, parent_run_id, run_start_time,
+                        end_time=datetime.now().astimezone(), best_fitness=best_so_far)
 
     elapsed = time.time() - start_time
-
-    env.close()
 
     print(f"\nTraining completed in {elapsed / 60:.1f} minutes.")
     print(f"Best genome fitness: {winner.fitness}")
@@ -321,8 +585,6 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
 
 
 if __name__ == "__main__":
-    import glob
-
     parser = argparse.ArgumentParser(description="NEAT training on Super Mario Bros.")
     parser.add_argument(
         "--minutes", "-m",
@@ -331,6 +593,13 @@ if __name__ == "__main__":
         help="Max time to run for. Plain number = minutes (e.g. '30'), "
              "or 'XXhYYm' (e.g. '1h30m'), or 'XXh' (e.g. '2h'). "
              "If omitted, you'll be prompted interactively.",
+    )
+    parser.add_argument(
+        "--run", "-r",
+        type=str,
+        default=None,
+        help="Run ID (or folder name) to resume from, skipping the interactive picker. "
+             "Use 'none' to force a fresh start even if previous runs exist.",
     )
     args = parser.parse_args()
 
@@ -342,23 +611,44 @@ if __name__ == "__main__":
 
     local_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(local_dir, "neat-config.txt")
+    search_root = os.getcwd()
 
-    checkpoint_files = glob.glob(os.path.join(local_dir, "neat-checkpoint-*"))
-    latest_checkpoint = None
-    latest_gen = -1
-    for f in checkpoint_files:
-        match = re.search(r"neat-checkpoint-(\d+)$", f)
-        if match:
-            gen = int(match.group(1))
-            if gen > latest_gen:
-                latest_gen = gen
-                latest_checkpoint = f
+    run_dirs = find_run_dirs(search_root)
+    runs = [summarize_run(d, search_root) for d in run_dirs]
 
-    if latest_checkpoint:
-        print(f"Found checkpoint at generation {latest_gen}: resuming and running for up to "
-              f"{time_budget_minutes:.1f} minutes.")
-        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=latest_checkpoint)
+    resume_path = None
+
+    if args.run is not None:
+        if args.run.lower() == "none":
+            print("Starting a fresh training run (forced via --run none).")
+        else:
+            match = next(
+                (r for r in runs if r["run_id"] == args.run or os.path.basename(r["dir"]) == args.run),
+                None,
+            )
+            if match is None:
+                print(f"Error: no run found matching '{args.run}'.")
+                sys.exit(1)
+            resume_path = match["resume_checkpoint"]
+            print(f"Using run: {match['run_id']}")
+    elif not runs:
+        print("No previous runs found: starting fresh.")
     else:
-        print(f"No checkpoint found: starting training from scratch, running for up to "
-              f"{time_budget_minutes:.1f} minutes.")
+        dated_runs = [r for r in runs if r["start_time"] is not None]
+        default_index = (
+            runs.index(max(dated_runs, key=lambda r: r["start_time"]))
+            if dated_runs else 0
+        )
+        arrows = compute_run_arrows(runs)
+        choice = pick_run_interactively(runs, arrows, default_index)
+        if choice == len(runs):
+            print("\nStarting a fresh training run.")
+        else:
+            resume_path = runs[choice]["resume_checkpoint"]
+            print(f"\nResuming from run: {runs[choice]['run_id']}")
+
+    if resume_path:
+        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=resume_path)
+    else:
+        print(f"Running for up to {time_budget_minutes:.1f} minutes.")
         run_training(config_path, time_budget_minutes=time_budget_minutes)
