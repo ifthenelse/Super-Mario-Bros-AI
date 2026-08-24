@@ -153,7 +153,13 @@ TILE_ROW_OFFSETS = [-48, -32, -16, 0, 16, 32]
 ENEMY_CEILING_CHECK_TILES = 3  # how many tiles above an enemy to check for jump-over clearance
 
 MAX_STEPS_PER_EPISODE = 5000
-STUCK_STEPS_LIMIT = 250  # end the episode if Mario hasn't progressed for N steps
+# Was 250 (~4s): too short to allow a "stop and wait for the enemy to pass"
+# strategy to ever pay off, since the episode would be cut before that
+# patience could lead anywhere. Raised to give that strategy a real chance
+# to be evolutionarily viable, while still cutting off hopelessly stuck genomes.
+STUCK_STEPS_LIMIT = 600
+
+LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to discourage reckless deaths
 
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
@@ -310,6 +316,8 @@ def eval_genomes(genomes, config, env, render=False):
 
         max_world_x = 0
         last_progress_step = 0
+        prev_lives = info.get("lives")
+        lives_lost = 0
 
         for step in range(MAX_STEPS_PER_EPISODE):
             observation = build_observation(ram)
@@ -324,6 +332,11 @@ def eval_genomes(genomes, config, env, render=False):
                 max_world_x = world_x
                 last_progress_step = step
 
+            lives = info.get("lives")
+            if lives is not None and prev_lives is not None and lives < prev_lives:
+                lives_lost += 1
+            prev_lives = lives
+
             if render:
                 env.render()
 
@@ -334,7 +347,12 @@ def eval_genomes(genomes, config, env, render=False):
                 # Mario has been stuck too long: no point continuing the episode
                 break
 
-        genome.fitness = float(max_world_x)
+        # Distance is still the dominant signal, but each life lost costs a small
+        # penalty: two genomes reaching similar distance are no longer equivalent
+        # if one got there by recklessly dying repeatedly and the other stayed
+        # cautious. Clamped at 0 to avoid negative fitness confusing NEAT's
+        # internal stagnation/adjusted-fitness math.
+        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost)
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -491,7 +509,8 @@ def format_run_line(r: dict, arrow: str) -> str:
             f"dur={duration_str:<8} fitness={fitness_str}")
 
 
-def pick_run_interactively(runs: list, arrows: dict, default_index: int) -> int:
+def pick_run_interactively(runs: list, arrows: dict, default_index: int,
+                            last_option_label: str = "[Start a fresh training run]") -> int:
     """Full-screen arrow-key picker (curses). Up/Down to move, SPACE/ENTER to
     select, ESC to pick 'fresh start'. Auto-selects default_index if no key
     is pressed at all within PROMPT_TIMEOUT_SECONDS; once any key is pressed,
@@ -525,7 +544,7 @@ def pick_run_interactively(runs: list, arrows: dict, default_index: int) -> int:
             marker = "> " if current == fresh_idx else "  "
             attr = curses.A_REVERSE if current == fresh_idx else curses.A_NORMAL
             try:
-                stdscr.addstr(3 + fresh_idx + 1, 0, f"{marker}[Start a fresh training run]", attr)
+                stdscr.addstr(3 + fresh_idx + 1, 0, f"{marker}{last_option_label}", attr)
             except curses.error:
                 pass
             stdscr.refresh()
