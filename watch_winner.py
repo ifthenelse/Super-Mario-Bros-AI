@@ -108,13 +108,17 @@ def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
 def print_death_trace(trace):
     print("  Steps leading up to this death (most recent last):")
     for step, snap, jump_pressed in trace:
-        enemy_str = "no enemies in range"
         if snap["enemies"]:
-            # Show the closest enemy ahead (smallest positive dx), or the closest overall
-            ahead = [e for e in snap["enemies"] if e["dx"] >= 0]
-            e = min(ahead, key=lambda e: e["dx"]) if ahead else min(snap["enemies"], key=lambda e: abs(e["dx"]))
-            enemy_str = (f"type={e['type']} dx={e['dx']:+d} dy={e['dy']:+d} "
-                         f"clearance={e['ceiling_clearance']:.2f} time_to_impact={e['time_to_enemy']:+.2f}")
+            # Show every active enemy slot, closest first, not just one —
+            # the actual colliding enemy might not be the "closest ahead".
+            enemies_sorted = sorted(snap["enemies"], key=lambda e: abs(e["dx"]))
+            enemy_str = " | ".join(
+                f"type={e['type']} dx={e['dx']:+d} dy={e['dy']:+d} "
+                f"clearance={e['ceiling_clearance']:.2f} time_to_impact={e['time_to_enemy']:+.2f}"
+                for e in enemies_sorted
+            )
+        else:
+            enemy_str = "no enemies in range"
         print(f"    [step {step}] y={snap['mario_y']:3d} x_speed={snap['x_speed']:+3d} "
               f"y_speed={snap['y_speed']:+3d} jump_pressed={jump_pressed}  |  {enemy_str}")
 
