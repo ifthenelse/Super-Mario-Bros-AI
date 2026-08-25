@@ -416,6 +416,13 @@ def eval_genomes(genomes, config, env, render=False):
         # fitness math.
         genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost + caution_bonus)
 
+        # Kept alongside the composite fitness (not used by NEAT itself) so we
+        # can tell, e.g., a genome with real distance progress apart from one
+        # that mostly racked up caution-bonus without advancing much further.
+        genome.raw_distance = float(max_world_x)
+        genome.lives_lost = lives_lost
+        genome.caution_bonus = caution_bonus
+
 
 def find_checkpoints(root_dir: str) -> list:
     """Recursively finds all NEAT checkpoint files under root_dir (including subfolders)."""
@@ -458,13 +465,16 @@ def load_run_info(run_dir: str) -> dict | None:
 
 def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
                     start_time: datetime, end_time: datetime | None = None,
-                    best_fitness: float | None = None):
+                    best_fitness: float | None = None, best_raw_distance: float | None = None,
+                    best_caution_bonus: float | None = None):
     info = {
         "run_id": run_id,
         "parent_run_id": parent_run_id,
         "start_time": start_time.isoformat(),
         "end_time": end_time.isoformat() if end_time else None,
         "best_fitness": best_fitness,
+        "best_raw_distance": best_raw_distance,
+        "best_caution_bonus": best_caution_bonus,
     }
     with open(os.path.join(run_dir, RUN_INFO_FILENAME), "w") as f:
         json.dump(info, f, indent=2)
@@ -721,22 +731,44 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                     print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
                     population.run(eval_wrapper, 1)
                     gen_count += 1
+
+                    gen_best = max(population.population.values(),
+                                    key=lambda g: g.fitness if g.fitness is not None else -1)
+                    raw_d = getattr(gen_best, "raw_distance", None)
+                    lives = getattr(gen_best, "lives_lost", None)
+                    bonus = getattr(gen_best, "caution_bonus", None)
+                    breakdown = ""
+                    if raw_d is not None:
+                        breakdown = f" (raw_distance={raw_d:.0f} lives_lost={lives} caution_bonus={bonus:.1f})"
+                    print(f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}")
                 winner = stats.best_genome()
             else:
                 winner = population.run(eval_wrapper, n_generations)
         finally:
             env.close()
             try:
-                best_so_far = stats.best_genome().fitness
+                best_genome_so_far = stats.best_genome()
+                best_so_far = best_genome_so_far.fitness
+                best_raw_distance = getattr(best_genome_so_far, "raw_distance", None)
+                best_caution_bonus = getattr(best_genome_so_far, "caution_bonus", None)
             except Exception:
                 best_so_far = None
+                best_raw_distance = None
+                best_caution_bonus = None
             write_run_info(run_dir, run_id, parent_run_id, run_start_time,
-                            end_time=datetime.now().astimezone(), best_fitness=best_so_far)
+                            end_time=datetime.now().astimezone(), best_fitness=best_so_far,
+                            best_raw_distance=best_raw_distance, best_caution_bonus=best_caution_bonus)
 
         elapsed = time.time() - start_time
 
         print(f"\nTraining completed in {elapsed / 60:.1f} minutes.")
         print(f"Best genome fitness: {winner.fitness}")
+        winner_raw_d = getattr(winner, "raw_distance", None)
+        winner_lives = getattr(winner, "lives_lost", None)
+        winner_bonus = getattr(winner, "caution_bonus", None)
+        if winner_raw_d is not None:
+            print(f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
+                  f"caution bonus: {winner_bonus:.1f})")
 
         with open("winner.pkl", "wb") as f:
             pickle.dump(winner, f)

@@ -188,6 +188,12 @@ def main(run_arg: str | None = None):
         state_change_reported = False
 
         print(f"Loaded genome fitness (from training): {winner.fitness}")
+        raw_d = getattr(winner, "raw_distance", None)
+        lives = getattr(winner, "lives_lost", None)
+        bonus = getattr(winner, "caution_bonus", None)
+        if raw_d is not None:
+            print(f"  (raw distance during training: {raw_d:.0f}, lives lost: {lives}, "
+                  f"caution bonus: {bonus:.1f})")
         print("Controls (game window must have focus): '+' speeds up, '-' slows down, "
               "'0' resets to 1x, SPACE/ENTER pauses/resumes.")
         print("Starting the game...\n")
