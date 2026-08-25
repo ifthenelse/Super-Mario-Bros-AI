@@ -199,6 +199,19 @@ IDLE_THRESHOLD_FRAMES = 60          # how long without progress before "try some
 ANTI_IDLE_BONUS_PER_NEW_ACTION = 0.3
 MAX_ANTI_IDLE_BONUS_PER_EPISODE = 15  # capped so exploring is worth less than actually resolving the stall
 
+# Targeted incentive for a specific, repeatedly observed failure: a solid
+# block directly ahead at ground level, with clear room directly above it to
+# jump over — and the network just keeps walking into it instead, resetting
+# to a stop each time, for hundreds of frames, never once pressing jump. The
+# general anti-idleness bonus above only rewards trying each new *button
+# combination* once, so it fades out quickly without necessarily reinforcing
+# the specific, broadly useful skill of "jump when blocked but clear above" —
+# this rewards that exact situation directly, every frame it's handled
+# correctly, capped so it can never be milked by holding jump indiscriminately
+# (it only fires when genuinely blocked with room to clear it).
+JUMP_WHEN_BLOCKED_BONUS_PER_FRAME = 0.3
+MAX_JUMP_WHEN_BLOCKED_BONUS_PER_EPISODE = 20
+
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
@@ -397,6 +410,7 @@ def eval_genomes(genomes, config, env, render=False):
         lives_lost = 0
         caution_bonus = 0.0
         anti_idle_bonus = 0.0
+        jump_when_blocked_bonus = 0.0
         idle_tried_actions = set()
 
         # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
@@ -429,6 +443,19 @@ def eval_genomes(genomes, config, env, render=False):
                     x_speed_now = int(np.int8(ram[ADDR_X_SPEED]))
                     if x_speed_now <= 0:
                         caution_bonus += CAUTION_BONUS_PER_FRAME
+
+            # Solid block directly ahead at ground level, with clear room right
+            # above it to jump over: reward pressing jump here specifically,
+            # since the repeatedly observed failure mode is walking straight
+            # into exactly this without ever attempting to clear it.
+            mario_x_screen = int(ram[ADDR_X_SCREEN])
+            mario_x_page = int(ram[ADDR_X_PAGE])
+            mario_world_x_now = mario_x_page * 256 + mario_x_screen
+            mario_y_now = int(ram[ADDR_Y_POS])
+            blocked_ahead = get_tile(ram, mario_world_x_now, mario_y_now, 16, 0) == 1
+            room_above = get_tile(ram, mario_world_x_now, mario_y_now, 16, -16) == 0
+            if blocked_ahead and room_above and bool(action[8]):
+                jump_when_blocked_bonus += JUMP_WHEN_BLOCKED_BONUS_PER_FRAME
 
             if step - last_progress_step >= IDLE_THRESHOLD_FRAMES:
                 # Been stuck a while with no progress, regardless of why:
@@ -487,8 +514,9 @@ def eval_genomes(genomes, config, env, render=False):
         # stagnation/adjusted-fitness math.
         capped_caution_bonus = min(caution_bonus, MAX_CAUTION_BONUS_PER_EPISODE)
         capped_anti_idle_bonus = min(anti_idle_bonus, MAX_ANTI_IDLE_BONUS_PER_EPISODE)
+        capped_jump_when_blocked_bonus = min(jump_when_blocked_bonus, MAX_JUMP_WHEN_BLOCKED_BONUS_PER_EPISODE)
         genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost
-                              + capped_caution_bonus + capped_anti_idle_bonus)
+                              + capped_caution_bonus + capped_anti_idle_bonus + capped_jump_when_blocked_bonus)
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
         # can tell, e.g., a genome with real distance progress apart from one
@@ -497,6 +525,7 @@ def eval_genomes(genomes, config, env, render=False):
         genome.lives_lost = lives_lost
         genome.caution_bonus = capped_caution_bonus
         genome.anti_idle_bonus = capped_anti_idle_bonus
+        genome.jump_when_blocked_bonus = capped_jump_when_blocked_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -541,7 +570,8 @@ def load_run_info(run_dir: str) -> dict | None:
 def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
                     start_time: datetime, end_time: datetime | None = None,
                     best_fitness: float | None = None, best_raw_distance: float | None = None,
-                    best_caution_bonus: float | None = None, best_anti_idle_bonus: float | None = None):
+                    best_caution_bonus: float | None = None, best_anti_idle_bonus: float | None = None,
+                    best_jump_when_blocked_bonus: float | None = None):
     info = {
         "run_id": run_id,
         "parent_run_id": parent_run_id,
@@ -551,6 +581,7 @@ def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
         "best_raw_distance": best_raw_distance,
         "best_caution_bonus": best_caution_bonus,
         "best_anti_idle_bonus": best_anti_idle_bonus,
+        "best_jump_when_blocked_bonus": best_jump_when_blocked_bonus,
     }
     with open(os.path.join(run_dir, RUN_INFO_FILENAME), "w") as f:
         json.dump(info, f, indent=2)
@@ -814,10 +845,12 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                     lives = getattr(gen_best, "lives_lost", None)
                     bonus = getattr(gen_best, "caution_bonus", None)
                     idle_bonus = getattr(gen_best, "anti_idle_bonus", None)
+                    jwb_bonus = getattr(gen_best, "jump_when_blocked_bonus", None)
                     breakdown = ""
                     if raw_d is not None:
                         breakdown = (f" (raw_distance={raw_d:.0f} lives_lost={lives} "
-                                     f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f})")
+                                     f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f} "
+                                     f"jump_when_blocked_bonus={jwb_bonus:.1f})")
                     print(f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}")
                 winner = stats.best_genome()
             else:
@@ -830,15 +863,18 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                 best_raw_distance = getattr(best_genome_so_far, "raw_distance", None)
                 best_caution_bonus = getattr(best_genome_so_far, "caution_bonus", None)
                 best_anti_idle_bonus = getattr(best_genome_so_far, "anti_idle_bonus", None)
+                best_jump_when_blocked_bonus = getattr(best_genome_so_far, "jump_when_blocked_bonus", None)
             except Exception:
                 best_so_far = None
                 best_raw_distance = None
                 best_caution_bonus = None
                 best_anti_idle_bonus = None
+                best_jump_when_blocked_bonus = None
             write_run_info(run_dir, run_id, parent_run_id, run_start_time,
                             end_time=datetime.now().astimezone(), best_fitness=best_so_far,
                             best_raw_distance=best_raw_distance, best_caution_bonus=best_caution_bonus,
-                            best_anti_idle_bonus=best_anti_idle_bonus)
+                            best_anti_idle_bonus=best_anti_idle_bonus,
+                            best_jump_when_blocked_bonus=best_jump_when_blocked_bonus)
 
         elapsed = time.time() - start_time
 
@@ -848,9 +884,11 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         winner_lives = getattr(winner, "lives_lost", None)
         winner_bonus = getattr(winner, "caution_bonus", None)
         winner_idle_bonus = getattr(winner, "anti_idle_bonus", None)
+        winner_jwb_bonus = getattr(winner, "jump_when_blocked_bonus", None)
         if winner_raw_d is not None:
             print(f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
-                  f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f})")
+                  f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f}, "
+                  f"jump-when-blocked bonus: {winner_jwb_bonus:.1f})")
 
         with open("winner.pkl", "wb") as f:
             pickle.dump(winner, f)

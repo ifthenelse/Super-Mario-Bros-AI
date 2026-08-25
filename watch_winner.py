@@ -190,9 +190,11 @@ def main(run_arg: str | None = None):
         lives = getattr(winner, "lives_lost", None)
         bonus = getattr(winner, "caution_bonus", None)
         idle_bonus = getattr(winner, "anti_idle_bonus", None)
+        jwb_bonus = getattr(winner, "jump_when_blocked_bonus", None)
         if raw_d is not None:
             print(f"  (raw distance during training: {raw_d:.0f}, lives lost: {lives}, "
-                  f"caution bonus: {bonus:.1f}, anti-idle bonus: {idle_bonus:.1f})")
+                  f"caution bonus: {bonus:.1f}, anti-idle bonus: {idle_bonus:.1f}, "
+                  f"jump-when-blocked bonus: {jwb_bonus:.1f})")
         print("Controls (game window must have focus): '+' speeds up, '-' slows down, "
               "'0' resets to 1x, SPACE/ENTER pauses/resumes.")
         print("Starting the game...\n")
