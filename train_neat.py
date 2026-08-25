@@ -161,6 +161,16 @@ STUCK_STEPS_LIMIT = 600
 
 LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to discourage reckless deaths
 
+# Reward shaping: since fitness is the *maximum* distance ever reached, briefly
+# backing off or waiting near danger already costs nothing on its own — but
+# nothing was actively rewarding it either, so evolution never had a direct
+# incentive to discover it. This gives a small continuous bonus for holding
+# still or retreating specifically when very close to an enemy that can't be
+# safely jumped over (clearance=0), instead of freezing in place or pushing
+# forward into it.
+CAUTION_DANGER_DX = 30       # pixels: how close counts as "immediate danger"
+CAUTION_BONUS_PER_FRAME = 0.5  # fitness bonus per frame of demonstrated caution
+
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
@@ -223,8 +233,12 @@ def build_observation(ram: np.ndarray) -> list:
     obs.extend(get_level_type_onehot(world, level))
 
     # Enemies: presence, dx, dy, type, ceiling clearance above, estimated time-to-impact
-    # (5 slots x 6 values = 30)
-
+    # (5 slots x 6 values = 30). Slots are filled in order of urgency (soonest
+    # potential impact first, regardless of ahead/behind), not by their raw
+    # in-game slot index or raw distance — an enemy about to hit Mario from
+    # behind is a bigger threat than one further away straight ahead, even if
+    # it isn't the closest by absolute position.
+    active_enemies = []
     for i in range(N_ENEMY_SLOTS):
         drawn = int(ram[ADDR_ENEMY_DRAWN + i])
         if drawn:
@@ -239,6 +253,13 @@ def build_observation(ram: np.ndarray) -> list:
             # Rough "frames until horizontally aligned" estimate, sign preserved (ahead/behind)
             time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
 
+            active_enemies.append((dx, dy, enemy_type, clearance, time_to_enemy))
+
+    active_enemies.sort(key=lambda e: abs(e[4]))  # soonest time-to-impact first
+
+    for i in range(N_ENEMY_SLOTS):
+        if i < len(active_enemies):
+            dx, dy, enemy_type, clearance, time_to_enemy = active_enemies[i]
             obs.extend([1.0, dx / 256.0, dy / 240.0, enemy_type / 10.0, clearance, time_to_enemy])
         else:
             obs.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -307,6 +328,34 @@ def outputs_to_action(outputs) -> np.ndarray:
     return np.array([1 if o > 0.5 else 0 for o in outputs], dtype=np.int8)
 
 
+def find_most_urgent_enemy(ram: np.ndarray):
+    """Returns (dx, clearance) for whichever active enemy has the soonest
+    time-to-impact, or None if no enemies are active. Kept independent from
+    build_observation() so its output shape/signature stays stable for other
+    callers (e.g. watch_winner.py) — this is purely for reward shaping."""
+    mario_x_screen = int(ram[ADDR_X_SCREEN])
+    mario_x_page = int(ram[ADDR_X_PAGE])
+    mario_world_x = mario_x_page * 256 + mario_x_screen
+    mario_y = int(ram[ADDR_Y_POS])
+    x_speed = int(np.int8(ram[ADDR_X_SPEED]))
+
+    best = None
+    best_abs_time = None
+    for i in range(N_ENEMY_SLOTS):
+        if int(ram[ADDR_ENEMY_DRAWN + i]):
+            enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
+            enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
+            dx = enemy_x - mario_x_screen
+            dy = enemy_y - mario_y
+            enemy_world_x = mario_world_x + dx
+            clearance = enemy_ceiling_clearance(ram, enemy_world_x, enemy_y)
+            time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
+            if best_abs_time is None or abs(time_to_enemy) < best_abs_time:
+                best_abs_time = abs(time_to_enemy)
+                best = (dx, clearance)
+    return best
+
+
 def eval_genomes(genomes, config, env, render=False):
     for genome_id, genome in genomes:
         net = neat.nn.FeedForwardNetwork.create(genome, config)
@@ -318,11 +367,23 @@ def eval_genomes(genomes, config, env, render=False):
         last_progress_step = 0
         prev_lives = info.get("lives")
         lives_lost = 0
+        caution_bonus = 0.0
 
         for step in range(MAX_STEPS_PER_EPISODE):
             observation = build_observation(ram)
             outputs = net.activate(observation)
             action = outputs_to_action(outputs)
+
+            urgent = find_most_urgent_enemy(ram)
+            if urgent is not None:
+                dx, clearance = urgent
+                if clearance == 0.0 and abs(dx) < CAUTION_DANGER_DX:
+                    # No safe way to jump over this enemy and it's very close:
+                    # reward holding still or backing off, instead of freezing
+                    # uselessly or pushing forward into it.
+                    x_speed_now = int(np.int8(ram[ADDR_X_SPEED]))
+                    if x_speed_now <= 0:
+                        caution_bonus += CAUTION_BONUS_PER_FRAME
 
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
@@ -348,11 +409,12 @@ def eval_genomes(genomes, config, env, render=False):
                 break
 
         # Distance is still the dominant signal, but each life lost costs a small
-        # penalty: two genomes reaching similar distance are no longer equivalent
-        # if one got there by recklessly dying repeatedly and the other stayed
-        # cautious. Clamped at 0 to avoid negative fitness confusing NEAT's
-        # internal stagnation/adjusted-fitness math.
-        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost)
+        # penalty (two genomes reaching similar distance aren't equivalent if one
+        # got there by recklessly dying repeatedly), and time spent cautiously
+        # waiting out an unjumpable enemy earns a small bonus. Clamped at 0 to
+        # avoid negative fitness confusing NEAT's internal stagnation/adjusted-
+        # fitness math.
+        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost + caution_bonus)
 
 
 def find_checkpoints(root_dir: str) -> list:
