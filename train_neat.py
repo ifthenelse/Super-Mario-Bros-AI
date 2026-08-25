@@ -147,8 +147,8 @@ TILE_COLS_PER_PAGE = 16
 
 # Tile grid: columns ahead of/behind Mario and rows above/below (in pixels, step 16 = 1 tile)
 # Extended forward reach (more reaction time) and one extra row up (ceiling awareness for narrow passages)
-TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96, 112, 128]
-TILE_ROW_OFFSETS = [-48, -32, -16, 0, 16, 32]
+TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160]
+TILE_ROW_OFFSETS = [-64, -48, -32, -16, 0, 16, 32, 48, 64]
 
 ENEMY_CEILING_CHECK_TILES = 3  # how many tiles above an enemy to check for jump-over clearance
 

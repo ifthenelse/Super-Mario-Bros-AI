@@ -9,7 +9,7 @@ no_fitness_termination  = False
 
 [DefaultGenome]
 # Inputs: mario_y (1) + x_speed (1) + y_speed (1) + power_state (1) + level_type one-hot (3) + enemies 5x(presence,dx,dy,type,ceiling_clearance,time_to_impact)=30 + tile grid 10x6=60 -> 97 total
-num_inputs              = 97
+num_inputs              = 145
 num_outputs              = 9
 num_hidden                = 0
 feed_forward             = True
