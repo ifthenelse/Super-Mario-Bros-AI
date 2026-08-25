@@ -184,6 +184,21 @@ CAUTION_BONUS_PER_FRAME = 0.5  # fitness bonus per frame of demonstrated caution
 # incentive to camp instead of actually resolving the situation and moving on.
 MAX_CAUTION_BONUS_PER_EPISODE = 30  # equivalent to 60 frames of caution, at most
 
+# General, cause-agnostic anti-idleness incentive. Repeatedly observed: once a
+# genome hits something it's never specifically learned to handle (a jump it's
+# never attempted, a gap shaped differently from what it's seen), it just goes
+# fully static — same held button state for hundreds of frames — until the
+# stuck-cutoff or the in-game clock ends the episode. Training's cutoff treats
+# "froze completely" and "tried something and failed" identically (episode
+# just ends either way), so there was never any pressure toward the general
+# instinct of "keep trying different things when stuck", regardless of *why*
+# it's stuck. This rewards trying a genuinely new action combination during a
+# stall, once per distinct action, so idle experimentation beats pure freezing
+# without being farmable by simply toggling between two states repeatedly.
+IDLE_THRESHOLD_FRAMES = 60          # how long without progress before "try something new" is rewarded
+ANTI_IDLE_BONUS_PER_NEW_ACTION = 0.3
+MAX_ANTI_IDLE_BONUS_PER_EPISODE = 15  # capped so exploring is worth less than actually resolving the stall
+
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
@@ -381,6 +396,8 @@ def eval_genomes(genomes, config, env, render=False):
         prev_lives = info.get("lives")
         lives_lost = 0
         caution_bonus = 0.0
+        anti_idle_bonus = 0.0
+        idle_tried_actions = set()
 
         # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
         # etc.) — they're a per-level coordinate, not a running total. Left as
@@ -413,6 +430,16 @@ def eval_genomes(genomes, config, env, render=False):
                     if x_speed_now <= 0:
                         caution_bonus += CAUTION_BONUS_PER_FRAME
 
+            if step - last_progress_step >= IDLE_THRESHOLD_FRAMES:
+                # Been stuck a while with no progress, regardless of why:
+                # reward trying a genuinely new action combination, once per
+                # distinct one, instead of just repeating the same held
+                # buttons (or toggling between the same two) indefinitely.
+                action_key = tuple(int(a) for a in action)
+                if action_key not in idle_tried_actions:
+                    idle_tried_actions.add(action_key)
+                    anti_idle_bonus += ANTI_IDLE_BONUS_PER_NEW_ACTION
+
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
 
@@ -429,6 +456,7 @@ def eval_genomes(genomes, config, env, render=False):
             if world_x > max_world_x:
                 max_world_x = world_x
                 last_progress_step = step
+                idle_tried_actions = set()  # genuine progress: the stall is over
 
             lives = info.get("lives")
             if lives is not None and prev_lives is not None and lives < prev_lives:
@@ -452,12 +480,15 @@ def eval_genomes(genomes, config, env, render=False):
         # Distance is still the dominant signal, but each life lost costs a small
         # penalty (two genomes reaching similar distance aren't equivalent if one
         # got there by recklessly dying repeatedly), and time spent cautiously
-        # waiting out an unjumpable enemy earns a small, capped bonus (capped so
-        # camping indefinitely next to danger isn't more rewarding than actually
-        # resolving it and continuing). Clamped at 0 to avoid negative fitness
-        # confusing NEAT's internal stagnation/adjusted-fitness math.
+        # waiting out an unjumpable enemy or experimenting during any other kind
+        # of stall earns a small, capped bonus (capped so lingering is never more
+        # rewarding than actually resolving the situation and continuing).
+        # Clamped at 0 to avoid negative fitness confusing NEAT's internal
+        # stagnation/adjusted-fitness math.
         capped_caution_bonus = min(caution_bonus, MAX_CAUTION_BONUS_PER_EPISODE)
-        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost + capped_caution_bonus)
+        capped_anti_idle_bonus = min(anti_idle_bonus, MAX_ANTI_IDLE_BONUS_PER_EPISODE)
+        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost
+                              + capped_caution_bonus + capped_anti_idle_bonus)
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
         # can tell, e.g., a genome with real distance progress apart from one
@@ -465,6 +496,7 @@ def eval_genomes(genomes, config, env, render=False):
         genome.raw_distance = float(max_world_x)
         genome.lives_lost = lives_lost
         genome.caution_bonus = capped_caution_bonus
+        genome.anti_idle_bonus = capped_anti_idle_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -509,7 +541,7 @@ def load_run_info(run_dir: str) -> dict | None:
 def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
                     start_time: datetime, end_time: datetime | None = None,
                     best_fitness: float | None = None, best_raw_distance: float | None = None,
-                    best_caution_bonus: float | None = None):
+                    best_caution_bonus: float | None = None, best_anti_idle_bonus: float | None = None):
     info = {
         "run_id": run_id,
         "parent_run_id": parent_run_id,
@@ -518,6 +550,7 @@ def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
         "best_fitness": best_fitness,
         "best_raw_distance": best_raw_distance,
         "best_caution_bonus": best_caution_bonus,
+        "best_anti_idle_bonus": best_anti_idle_bonus,
     }
     with open(os.path.join(run_dir, RUN_INFO_FILENAME), "w") as f:
         json.dump(info, f, indent=2)
@@ -780,9 +813,11 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                     raw_d = getattr(gen_best, "raw_distance", None)
                     lives = getattr(gen_best, "lives_lost", None)
                     bonus = getattr(gen_best, "caution_bonus", None)
+                    idle_bonus = getattr(gen_best, "anti_idle_bonus", None)
                     breakdown = ""
                     if raw_d is not None:
-                        breakdown = f" (raw_distance={raw_d:.0f} lives_lost={lives} caution_bonus={bonus:.1f})"
+                        breakdown = (f" (raw_distance={raw_d:.0f} lives_lost={lives} "
+                                     f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f})")
                     print(f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}")
                 winner = stats.best_genome()
             else:
@@ -794,13 +829,16 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                 best_so_far = best_genome_so_far.fitness
                 best_raw_distance = getattr(best_genome_so_far, "raw_distance", None)
                 best_caution_bonus = getattr(best_genome_so_far, "caution_bonus", None)
+                best_anti_idle_bonus = getattr(best_genome_so_far, "anti_idle_bonus", None)
             except Exception:
                 best_so_far = None
                 best_raw_distance = None
                 best_caution_bonus = None
+                best_anti_idle_bonus = None
             write_run_info(run_dir, run_id, parent_run_id, run_start_time,
                             end_time=datetime.now().astimezone(), best_fitness=best_so_far,
-                            best_raw_distance=best_raw_distance, best_caution_bonus=best_caution_bonus)
+                            best_raw_distance=best_raw_distance, best_caution_bonus=best_caution_bonus,
+                            best_anti_idle_bonus=best_anti_idle_bonus)
 
         elapsed = time.time() - start_time
 
@@ -809,9 +847,10 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         winner_raw_d = getattr(winner, "raw_distance", None)
         winner_lives = getattr(winner, "lives_lost", None)
         winner_bonus = getattr(winner, "caution_bonus", None)
+        winner_idle_bonus = getattr(winner, "anti_idle_bonus", None)
         if winner_raw_d is not None:
             print(f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
-                  f"caution bonus: {winner_bonus:.1f})")
+                  f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f})")
 
         with open("winner.pkl", "wb") as f:
             pickle.dump(winner, f)
