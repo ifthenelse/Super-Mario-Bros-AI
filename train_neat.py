@@ -19,7 +19,7 @@ import re
 import select
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 import neat
 import numpy as np
@@ -153,11 +153,16 @@ TILE_ROW_OFFSETS = [-48, -32, -16, 0, 16, 32]
 ENEMY_CEILING_CHECK_TILES = 3  # how many tiles above an enemy to check for jump-over clearance
 
 MAX_STEPS_PER_EPISODE = 5000
-# Was 250 (~4s): too short to allow a "stop and wait for the enemy to pass"
-# strategy to ever pay off, since the episode would be cut before that
-# patience could lead anywhere. Raised to give that strategy a real chance
-# to be evolutionarily viable, while still cutting off hopelessly stuck genomes.
-STUCK_STEPS_LIMIT = 600
+
+# Two different "stuck" tolerances, not one: with a single high limit, evolution
+# never sees the difference between a genome that's waiting out an unresolved
+# threat and one that's just looping in place with nothing blocking it — both
+# get cut off identically, so there's no pressure to fix the latter (observed:
+# a genome killed nearby enemies, then bounced in place forever with "no
+# enemies in range" until the in-game timer ran out — training's cutoff had
+# already locked in its fitness long before that, hiding the problem).
+STUCK_STEPS_LIMIT_WITH_THREAT = 600    # patience is warranted: an unjumpable enemy is still nearby
+STUCK_STEPS_LIMIT_NO_THREAT = 120      # no excuse: nothing nearby justifies not moving
 
 LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to discourage reckless deaths
 
@@ -170,6 +175,14 @@ LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to 
 # forward into it.
 CAUTION_DANGER_DX = 30       # pixels: how close counts as "immediate danger"
 CAUTION_BONUS_PER_FRAME = 0.5  # fitness bonus per frame of demonstrated caution
+
+# Without a cap, a genome can "camp" indefinitely next to an unjumpable enemy,
+# banking bonus every frame right up until the stuck-cutoff ends the episode
+# (empirically: exactly this happened — a genome earned 298.5 bonus, i.e. 597
+# frames, just under the 600-frame stuck cutoff — while making far less real
+# distance progress than genomes that got zero bonus). Capping it removes the
+# incentive to camp instead of actually resolving the situation and moving on.
+MAX_CAUTION_BONUS_PER_EPISODE = 30  # equivalent to 60 frames of caution, at most
 
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
@@ -369,6 +382,21 @@ def eval_genomes(genomes, config, env, render=False):
         lives_lost = 0
         caution_bonus = 0.0
 
+        # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
+        # etc.) — they're a per-level coordinate, not a running total. Left as
+        # raw values, "distance" would drop to ~0 the instant a new level
+        # starts and would need to climb all the way back past the previous
+        # level's ending position before ever registering as new progress
+        # again — during which the stuck-cutoff timer keeps counting the
+        # entire time, since it never resets on a level transition. In
+        # practice this could make it near-impossible to ever get credit for
+        # progress in a level shorter than the previous one's ending x. Fix:
+        # accumulate an offset each time a level transition is detected, so
+        # world_x is a true running total across the whole episode.
+        level_offset = 0
+        prev_world_level = (int(np.int8(ram[ADDR_LEVEL_HI])), int(np.int8(ram[ADDR_LEVEL_LO])))
+        prev_raw_world_x = 0
+
         for step in range(MAX_STEPS_PER_EPISODE):
             observation = build_observation(ram)
             outputs = net.activate(observation)
@@ -388,7 +416,16 @@ def eval_genomes(genomes, config, env, render=False):
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
 
-            world_x = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
+            world_level = (int(np.int8(ram[ADDR_LEVEL_HI])), int(np.int8(ram[ADDR_LEVEL_LO])))
+            if world_level != prev_world_level:
+                # Credit whatever distance was reached in the level just left,
+                # before its coordinate resets to 0 in the new level.
+                level_offset += prev_raw_world_x
+            prev_world_level = world_level
+
+            raw_world_x = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
+            prev_raw_world_x = raw_world_x
+            world_x = level_offset + raw_world_x
             if world_x > max_world_x:
                 max_world_x = world_x
                 last_progress_step = step
@@ -404,24 +441,30 @@ def eval_genomes(genomes, config, env, render=False):
             if terminated or truncated:
                 break
 
-            if step - last_progress_step > STUCK_STEPS_LIMIT:
-                # Mario has been stuck too long: no point continuing the episode
+            has_blocking_threat = urgent is not None and urgent[1] == 0.0 and abs(urgent[0]) < CAUTION_DANGER_DX
+            effective_stuck_limit = (STUCK_STEPS_LIMIT_WITH_THREAT if has_blocking_threat
+                                      else STUCK_STEPS_LIMIT_NO_THREAT)
+            if step - last_progress_step > effective_stuck_limit:
+                # Mario has been stuck too long given the current situation:
+                # no point continuing the episode
                 break
 
         # Distance is still the dominant signal, but each life lost costs a small
         # penalty (two genomes reaching similar distance aren't equivalent if one
         # got there by recklessly dying repeatedly), and time spent cautiously
-        # waiting out an unjumpable enemy earns a small bonus. Clamped at 0 to
-        # avoid negative fitness confusing NEAT's internal stagnation/adjusted-
-        # fitness math.
-        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost + caution_bonus)
+        # waiting out an unjumpable enemy earns a small, capped bonus (capped so
+        # camping indefinitely next to danger isn't more rewarding than actually
+        # resolving it and continuing). Clamped at 0 to avoid negative fitness
+        # confusing NEAT's internal stagnation/adjusted-fitness math.
+        capped_caution_bonus = min(caution_bonus, MAX_CAUTION_BONUS_PER_EPISODE)
+        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost + capped_caution_bonus)
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
         # can tell, e.g., a genome with real distance progress apart from one
         # that mostly racked up caution-bonus without advancing much further.
         genome.raw_distance = float(max_world_x)
         genome.lives_lost = lives_lost
-        genome.caution_bonus = caution_bonus
+        genome.caution_bonus = capped_caution_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -813,6 +856,8 @@ if __name__ == "__main__":
 
     run_dirs = find_run_dirs(search_root)
     runs = [summarize_run(d, search_root) for d in run_dirs]
+    # Most recently started first; runs with no known start time sort last.
+    runs.sort(key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     resume_path = None
 
@@ -832,11 +877,7 @@ if __name__ == "__main__":
     elif not runs:
         print("No previous runs found: starting fresh.")
     else:
-        dated_runs = [r for r in runs if r["start_time"] is not None]
-        default_index = (
-            runs.index(max(dated_runs, key=lambda r: r["start_time"]))
-            if dated_runs else 0
-        )
+        default_index = 0  # runs are sorted most-recently-started first
         arrows = compute_run_arrows(runs)
         choice = pick_run_interactively(runs, arrows, default_index)
         if choice == len(runs):

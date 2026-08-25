@@ -24,7 +24,7 @@ import pickle
 import sys
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 
 import neat
 import numpy as np
@@ -86,17 +86,15 @@ def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
         sys.exit(1)
 
     runs = [summarize_run(d, search_root) for d in winner_dirs]
+    # Most recently started first; runs with no known start time sort last.
+    runs.sort(key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     arrows = compute_run_arrows(runs)
 
     # Default to the winner.pkl sitting directly in the current directory (the
     # active, not-yet-archived run), if there is one; otherwise the most
-    # recently started run.
+    # recently started run (which, now that the list is sorted, is index 0).
     cwd_index = next((i for i, r in enumerate(runs) if os.path.abspath(r["dir"]) == os.path.abspath(search_root)), None)
-    if cwd_index is not None:
-        default_index = cwd_index
-    else:
-        dated_runs = [r for r in runs if r["start_time"] is not None]
-        default_index = runs.index(max(dated_runs, key=lambda r: r["start_time"])) if dated_runs else 0
+    default_index = cwd_index if cwd_index is not None else 0
 
     choice = pick_run_interactively(runs, arrows, default_index, last_option_label="[Cancel]")
     if choice == len(runs):
