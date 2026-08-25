@@ -8,6 +8,11 @@ Validates:
   Mario's death sequence begins (freezing all other on-screen action) — walk
   Mario into an enemy on purpose and watch for the ">>> object_pause CHANGED"
   line to confirm whether this is a reliable death-onset signal
+- whether the page-based position (0x006D/0x0086, used for the tile grid) and
+  the xscrollHi/xscrollLo-based position (used for fitness) agree with each
+  other right at a level transition — walk into a pipe or across a level
+  boundary and watch the ">>> LEVEL CHANGED" dump for a mismatch between the
+  two, or a tile grid that doesn't match what's on screen
 
 This probe gives you MANUAL keyboard control over Mario, plus quick-load
 shortcuts to jump straight into different level types using the savestates
@@ -36,17 +41,37 @@ import pyglet
 
 import stable_retro
 
+from train_neat import ADDR_X_PAGE, ADDR_X_SCREEN, ADDR_Y_POS, get_tile
+
 ADDR_AREA_TYPE = 0x0764     # candidate, found unreliable: 0x0764 never changed across real level transitions
 ADDR_ENGINE_STATE = 0x0770  # candidate: internal game engine state/subroutine (also cited as "Gameplay Mode")
 ADDR_OBJECT_PAUSE = 0x0747  # candidate: "Object Pause" — freezes all action except Mario, used upon dying
 ADDR_LEVEL_HI = 1887        # validated (from data.json): world index
 ADDR_LEVEL_LO = 1884        # validated (from data.json): level-within-world index
 
+# How many frames to dump in full detail right after a world-level change is
+# detected, to check whether the RAM-page-based position (used for the tile
+# grid) and the xscrollHi/xscrollLo-based position (used for fitness) agree
+# with each other and with what's on screen during the transition.
+TRANSITION_DUMP_FRAMES = 90
+
 QUICK_LOAD_STATES = {
     pyglet.window.key._1: "Level1-1",
     pyglet.window.key._2: "Level1-4",
     pyglet.window.key._3: "Level2-1",
 }
+
+
+def print_tile_grid(ram, mario_world_x, mario_y):
+    print("  Tile grid (X = solid, . = empty, M = Mario):")
+    for row_offset in [-48, -32, -16, 0, 16, 32]:
+        line = ""
+        for col_offset in [-16, 0, 16, 32, 48, 64, 80, 96, 112, 128]:
+            if row_offset == 0 and col_offset == 0:
+                line += "M"
+            else:
+                line += "X" if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset) else "."
+        print(f"    {line}")
 
 
 def make_env(state=None):
@@ -132,6 +157,8 @@ def main():
 
     step = 0
     prev_object_pause = None
+    prev_world_level = None
+    transition_dump_remaining = 0
     while True:
         step_start = time.time()
         env = shared["env"]
@@ -163,6 +190,28 @@ def main():
         object_pause = int(ram[ADDR_OBJECT_PAUSE])
         world = int(np.int8(ram[ADDR_LEVEL_HI])) + 1
         level = int(np.int8(ram[ADDR_LEVEL_LO])) + 1
+        world_level = (world, level)
+
+        mario_x_screen = int(ram[ADDR_X_SCREEN])
+        mario_x_page = int(ram[ADDR_X_PAGE])
+        mario_y = int(ram[ADDR_Y_POS])
+        world_x_from_page = mario_x_page * 256 + mario_x_screen
+        world_x_from_scroll = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
+
+        if prev_world_level is not None and world_level != prev_world_level:
+            print(f"\n>>> [step {step:5d}] LEVEL CHANGED: {prev_world_level} -> {world_level}. "
+                  f"Dumping the next {TRANSITION_DUMP_FRAMES} frames in detail:")
+            transition_dump_remaining = TRANSITION_DUMP_FRAMES
+        prev_world_level = world_level
+
+        if transition_dump_remaining > 0:
+            transition_dump_remaining -= 1
+            print(f"  [step {step:5d}] page-based world_x={world_x_from_page:5d} "
+                  f"(page={mario_x_page} screen={mario_x_screen})  "
+                  f"scroll-based world_x={world_x_from_scroll:5d} "
+                  f"(xscrollHi={info.get('xscrollHi')} xscrollLo={info.get('xscrollLo')})  "
+                  f"mario_y={mario_y}")
+            print_tile_grid(ram, world_x_from_page, mario_y)
 
         if step % print_every == 0 or shared["print_now"]:
             shared["print_now"] = False
