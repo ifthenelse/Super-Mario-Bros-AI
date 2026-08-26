@@ -272,6 +272,21 @@ ADVANCE_DANGER_DX = (
 ADVANCE_BONUS_PER_FRAME = 0.2
 MAX_ADVANCE_BONUS_PER_EPISODE = 15
 
+# Gap in the above: a Piranha Plant standing on top of its own pipe doesn't
+# emerge — so while Mario is up there, it's genuinely inactive/not drawn, and
+# find_most_urgent_enemy() returns nothing at all. Observed: the network then
+# just sits frozen indefinitely, as if still waiting the plant out, even
+# though nothing is tracked as a threat anymore. Neither bonus above applies
+# — both require an actual detected enemy. This covers the "completely
+# clear, nothing detected, still not moving" case directly: any frame with
+# no urgent enemy and positive forward speed earns a small reward, from the
+# very first such frame (unlike the running bonus, which only pays once
+# movement has already been sustained for a while) — specifically meant to
+# help break an initial freeze, not to reward sustained running (that's
+# what running_bonus is for).
+CLEAR_PATH_BONUS_PER_FRAME = 0.15
+MAX_CLEAR_PATH_BONUS_PER_EPISODE = 15
+
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
@@ -508,6 +523,7 @@ def eval_genomes(genomes, config, env, render=False):
         running_bonus = 0.0
         running_streak = 0
         advance_bonus = 0.0
+        clear_path_bonus = 0.0
         idle_tried_actions = set()
 
         # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
@@ -535,6 +551,10 @@ def eval_genomes(genomes, config, env, render=False):
 
             urgent = find_most_urgent_enemy(ram)
             x_speed_now_early = int(np.int8(ram[ADDR_X_SPEED]))
+            mario_x_screen = int(ram[ADDR_X_SCREEN])
+            mario_x_page = int(ram[ADDR_X_PAGE])
+            mario_world_x_now = mario_x_page * 256 + mario_x_screen
+            mario_y_now = int(ram[ADDR_Y_POS])
             if urgent is not None:
                 dx, clearance = urgent
                 if clearance == 0.0 and abs(dx) < CAUTION_DANGER_DX:
@@ -549,15 +569,26 @@ def eval_genomes(genomes, config, env, render=False):
                     # is the mistake, not the safe choice. Reward moving.
                     if x_speed_now_early > 0:
                         advance_bonus += ADVANCE_BONUS_PER_FRAME
+            elif x_speed_now_early > 0:
+                # Nothing detected as a threat at all (e.g. standing on top of
+                # a pipe, which keeps its Piranha Plant from emerging — so it's
+                # genuinely not tracked as an enemy right now): moving forward
+                # is only rewarded if the ground actually continues a couple of
+                # tiles ahead — otherwise this would just teach Mario to dash
+                # into a pit instead of standing still.
+                ground_ahead_near = (
+                    get_tile(ram, mario_world_x_now, mario_y_now, 32, 16) == 1
+                )
+                ground_ahead_far = (
+                    get_tile(ram, mario_world_x_now, mario_y_now, 48, 16) == 1
+                )
+                if ground_ahead_near and ground_ahead_far:
+                    clear_path_bonus += CLEAR_PATH_BONUS_PER_FRAME
 
             # Solid block directly ahead at ground level, with clear room right
             # above it to jump over: reward pressing jump here specifically,
             # since the repeatedly observed failure mode is walking straight
             # into exactly this without ever attempting to clear it.
-            mario_x_screen = int(ram[ADDR_X_SCREEN])
-            mario_x_page = int(ram[ADDR_X_PAGE])
-            mario_world_x_now = mario_x_page * 256 + mario_x_screen
-            mario_y_now = int(ram[ADDR_Y_POS])
             blocked_ahead = get_tile(ram, mario_world_x_now, mario_y_now, 16, 0) == 1
             room_above = get_tile(ram, mario_world_x_now, mario_y_now, 16, -16) == 0
             if blocked_ahead and room_above and bool(action[8]):
@@ -664,6 +695,9 @@ def eval_genomes(genomes, config, env, render=False):
         )
         capped_running_bonus = min(running_bonus, MAX_RUNNING_BONUS_PER_EPISODE)
         capped_advance_bonus = min(advance_bonus, MAX_ADVANCE_BONUS_PER_EPISODE)
+        capped_clear_path_bonus = min(
+            clear_path_bonus, MAX_CLEAR_PATH_BONUS_PER_EPISODE
+        )
         genome.fitness = max(
             0.0,
             float(max_world_x)
@@ -673,7 +707,8 @@ def eval_genomes(genomes, config, env, render=False):
             + capped_jump_when_blocked_bonus
             + capped_narrow_gap_bonus
             + capped_running_bonus
-            + capped_advance_bonus,
+            + capped_advance_bonus
+            + capped_clear_path_bonus,
         )
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
@@ -687,6 +722,7 @@ def eval_genomes(genomes, config, env, render=False):
         genome.narrow_gap_bonus = capped_narrow_gap_bonus
         genome.running_bonus = capped_running_bonus
         genome.advance_bonus = capped_advance_bonus
+        genome.clear_path_bonus = capped_clear_path_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -742,6 +778,7 @@ def write_run_info(
     best_narrow_gap_bonus: float | None = None,
     best_running_bonus: float | None = None,
     best_advance_bonus: float | None = None,
+    best_clear_path_bonus: float | None = None,
     state: str | None = None,
 ):
     info = {
@@ -757,6 +794,7 @@ def write_run_info(
         "best_narrow_gap_bonus": best_narrow_gap_bonus,
         "best_running_bonus": best_running_bonus,
         "best_advance_bonus": best_advance_bonus,
+        "best_clear_path_bonus": best_clear_path_bonus,
         # Which stable-retro state each episode started from (None = the
         # game's normal start). Fitness/raw_distance from a state-specific
         # run isn't on the same scale as a full-game run, since it skips
@@ -1167,13 +1205,15 @@ def run_training(
                     ng_bonus = getattr(gen_best, "narrow_gap_bonus", None)
                     run_bonus = getattr(gen_best, "running_bonus", None)
                     adv_bonus = getattr(gen_best, "advance_bonus", None)
+                    cp_bonus = getattr(gen_best, "clear_path_bonus", None)
                     breakdown = ""
                     if raw_d is not None:
                         breakdown = (
                             f" (raw_distance={raw_d:.0f} lives_lost={lives} "
                             f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f} "
                             f"jump_when_blocked_bonus={jwb_bonus:.1f} narrow_gap_bonus={ng_bonus:.1f} "
-                            f"running_bonus={run_bonus:.1f} advance_bonus={adv_bonus:.1f})"
+                            f"running_bonus={run_bonus:.1f} advance_bonus={adv_bonus:.1f} "
+                            f"clear_path_bonus={cp_bonus:.1f})"
                         )
                     print(
                         f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}"
@@ -1199,6 +1239,9 @@ def run_training(
                 )
                 best_running_bonus = getattr(best_genome_so_far, "running_bonus", None)
                 best_advance_bonus = getattr(best_genome_so_far, "advance_bonus", None)
+                best_clear_path_bonus = getattr(
+                    best_genome_so_far, "clear_path_bonus", None
+                )
             except Exception:
                 best_so_far = None
                 best_raw_distance = None
@@ -1208,6 +1251,7 @@ def run_training(
                 best_narrow_gap_bonus = None
                 best_running_bonus = None
                 best_advance_bonus = None
+                best_clear_path_bonus = None
             write_run_info(
                 run_dir,
                 run_id,
@@ -1222,6 +1266,7 @@ def run_training(
                 best_narrow_gap_bonus=best_narrow_gap_bonus,
                 best_running_bonus=best_running_bonus,
                 best_advance_bonus=best_advance_bonus,
+                best_clear_path_bonus=best_clear_path_bonus,
                 state=state,
             )
 
@@ -1237,12 +1282,14 @@ def run_training(
         winner_ng_bonus = getattr(winner, "narrow_gap_bonus", None)
         winner_run_bonus = getattr(winner, "running_bonus", None)
         winner_adv_bonus = getattr(winner, "advance_bonus", None)
+        winner_cp_bonus = getattr(winner, "clear_path_bonus", None)
         if winner_raw_d is not None:
             print(
                 f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
                 f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f}, "
                 f"jump-when-blocked bonus: {winner_jwb_bonus:.1f}, narrow-gap bonus: {winner_ng_bonus:.1f}, "
-                f"running bonus: {winner_run_bonus:.1f}, advance bonus: {winner_adv_bonus:.1f})"
+                f"running bonus: {winner_run_bonus:.1f}, advance bonus: {winner_adv_bonus:.1f}, "
+                f"clear-path bonus: {winner_cp_bonus:.1f})"
             )
 
         with open("winner.pkl", "wb") as f:
