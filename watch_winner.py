@@ -32,6 +32,14 @@ import pyglet
 
 import stable_retro
 
+try:
+    import imageio.v2 as imageio
+except ImportError:  # pragma: no cover - optional dependency
+    try:
+        import imageio
+    except ImportError:
+        imageio = None
+
 from train_neat import (
     Tee,
     build_observation,
@@ -56,6 +64,15 @@ ADDR_OBJECT_PAUSE = 0x0747
 # actual moment control was lost (the collision) — not the death animation
 # that follows it, which carries no useful information.
 CONTEXT_STEPS_TO_SHOW = 40
+
+# Rolling buffer of rendered frames, saved as a video when a death is
+# detected. Reading the numeric trace tells you what the network *saw* and
+# *decided*; watching the clip tells you what that actually looked like,
+# which has repeatedly turned out to be the faster way to spot what's going
+# wrong. Kept separate from HISTORY_BUFFER_SIZE since raw RGB frames cost
+# far more memory than the small per-frame dicts.
+VIDEO_FRAMES_BEFORE_DEATH = 100
+VIDEO_FPS = 30
 
 
 def find_winner_dirs(root_dir: str) -> list:
@@ -101,6 +118,27 @@ def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
         print("Cancelled.")
         sys.exit(0)
     return os.path.join(runs[choice]["dir"], "winner.pkl")
+
+
+def save_death_video(frames, step: int, out_dir: str) -> str | None:
+    """Writes the buffered frames leading up to a death to an mp4. Returns the
+    path written, or None if it couldn't be saved (missing dependency, no
+    frames, or a write error) — never raises, since a failed recording
+    shouldn't interrupt watching the run."""
+    if imageio is None:
+        print("  (video not saved: imageio isn't installed — "
+              "run `pip install 'imageio[ffmpeg]'` to enable death clips)")
+        return None
+    if not frames:
+        return None
+
+    path = os.path.join(out_dir, f"death-{datetime.now():%Y%m%d-%H%M%S}-step{step}.mp4")
+    try:
+        imageio.mimsave(path, frames, fps=VIDEO_FPS, macro_block_size=1)
+    except Exception as e:
+        print(f"  (video not saved: {e})")
+        return None
+    return path
 
 
 def print_death_trace(trace):
@@ -183,6 +221,7 @@ def main(run_arg: str | None = None):
         max_world_x = 0
         prev_lives = info.get("lives")
         history = deque(maxlen=HISTORY_BUFFER_SIZE)
+        video_frames = deque(maxlen=VIDEO_FRAMES_BEFORE_DEATH)
         state_change_reported = False
 
         print(f"Loaded genome fitness (from training): {winner.fitness}")
@@ -219,6 +258,8 @@ def main(run_arg: str | None = None):
             # so this frame can later be shown as context leading up to a state change.
             snap = debug_snapshot(ram)
             history.append((step, snap, bool(action[8])))
+            # obs is the emulator's RGB frame; buffer it for the death clip.
+            video_frames.append(np.asarray(obs, dtype=np.uint8))
 
             player_state = int(ram[ADDR_OBJECT_PAUSE])
             if player_state == 0:
@@ -237,6 +278,9 @@ def main(run_arg: str | None = None):
                     print_death_trace(context)
                 else:
                     print("  (not enough history before this point to show)")
+                video_path = save_death_video(list(video_frames), step, os.getcwd())
+                if video_path:
+                    print(f"  Clip of the {len(video_frames)} frames before this death: {video_path}")
 
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
