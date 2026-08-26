@@ -85,13 +85,19 @@ def resolve_time_budget_minutes(cli_value: str | None) -> float:
     if cli_value is not None:
         return parse_duration_to_minutes(cli_value)
 
-    print(f"The script will run for {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes. "
-          f"Type a value in minutes if you want to change it: ", end="", flush=True)
+    print(
+        f"The script will run for {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes. "
+        f"Type a value in minutes if you want to change it: ",
+        end="",
+        flush=True,
+    )
 
     ready, _, _ = select.select([sys.stdin], [], [], PROMPT_TIMEOUT_SECONDS)
     if not ready:
-        print(f"\nNo input received within {PROMPT_TIMEOUT_SECONDS} seconds. "
-              f"Using the default: {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes.")
+        print(
+            f"\nNo input received within {PROMPT_TIMEOUT_SECONDS} seconds. "
+            f"Using the default: {DEFAULT_TIME_BUDGET_MINUTES:.0f} minutes."
+        )
         return DEFAULT_TIME_BUDGET_MINUTES
 
     line = sys.stdin.readline().strip()
@@ -100,6 +106,7 @@ def resolve_time_budget_minutes(cli_value: str | None) -> float:
         return DEFAULT_TIME_BUDGET_MINUTES
 
     return parse_duration_to_minutes(line)
+
 
 # --- RAM addresses validated with ram_probe.py / ram_probe_advanced.py ---
 ADDR_X_SCREEN = 0x0086
@@ -110,11 +117,13 @@ ADDR_Y_SPEED = 0x009F
 
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
-ADDR_ENEMY_TYPE = 0x0016   # validated: enemy type per slot (e.g. 6 = Koopa Troopa)
+ADDR_ENEMY_TYPE = 0x0016  # validated: enemy type per slot (e.g. 6 = Koopa Troopa)
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
-ADDR_POWER_STATE = 0x0756  # candidate, NOT yet validated on this ROM: 0=small, 1=big, 2=fire
+ADDR_POWER_STATE = (
+    0x0756  # candidate, NOT yet validated on this ROM: 0=small, 1=big, 2=fire
+)
 
 ADDR_LEVEL_HI = 1887  # validated (from data.json): world index (0-based)
 ADDR_LEVEL_LO = 1884  # validated (from data.json): level-within-world index (0-based)
@@ -141,6 +150,7 @@ def get_level_type_onehot(world: int, level: int) -> tuple:
         1.0 if level_type == "castle" else 0.0,
     )
 
+
 TILE_BUFFER_BASE = 0x0500
 TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
@@ -150,7 +160,9 @@ TILE_COLS_PER_PAGE = 16
 TILE_COL_OFFSETS = [-16, 0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160]
 TILE_ROW_OFFSETS = [-64, -48, -32, -16, 0, 16, 32, 48, 64]
 
-ENEMY_CEILING_CHECK_TILES = 3  # how many tiles above an enemy to check for jump-over clearance
+ENEMY_CEILING_CHECK_TILES = (
+    3  # how many tiles above an enemy to check for jump-over clearance
+)
 
 MAX_STEPS_PER_EPISODE = 5000
 
@@ -161,8 +173,10 @@ MAX_STEPS_PER_EPISODE = 5000
 # a genome killed nearby enemies, then bounced in place forever with "no
 # enemies in range" until the in-game timer ran out — training's cutoff had
 # already locked in its fitness long before that, hiding the problem).
-STUCK_STEPS_LIMIT_WITH_THREAT = 600    # patience is warranted: an unjumpable enemy is still nearby
-STUCK_STEPS_LIMIT_NO_THREAT = 120      # no excuse: nothing nearby justifies not moving
+STUCK_STEPS_LIMIT_WITH_THREAT = (
+    600  # patience is warranted: an unjumpable enemy is still nearby
+)
+STUCK_STEPS_LIMIT_NO_THREAT = 120  # no excuse: nothing nearby justifies not moving
 
 LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to discourage reckless deaths
 
@@ -173,7 +187,7 @@ LIFE_LOST_PENALTY = 100  # fitness penalty per life lost during the episode, to 
 # still or retreating specifically when very close to an enemy that can't be
 # safely jumped over (clearance=0), instead of freezing in place or pushing
 # forward into it.
-CAUTION_DANGER_DX = 30       # pixels: how close counts as "immediate danger"
+CAUTION_DANGER_DX = 30  # pixels: how close counts as "immediate danger"
 CAUTION_BONUS_PER_FRAME = 0.5  # fitness bonus per frame of demonstrated caution
 
 # Without a cap, a genome can "camp" indefinitely next to an unjumpable enemy,
@@ -195,9 +209,13 @@ MAX_CAUTION_BONUS_PER_EPISODE = 30  # equivalent to 60 frames of caution, at mos
 # it's stuck. This rewards trying a genuinely new action combination during a
 # stall, once per distinct action, so idle experimentation beats pure freezing
 # without being farmable by simply toggling between two states repeatedly.
-IDLE_THRESHOLD_FRAMES = 60          # how long without progress before "try something new" is rewarded
+IDLE_THRESHOLD_FRAMES = (
+    60  # how long without progress before "try something new" is rewarded
+)
 ANTI_IDLE_BONUS_PER_NEW_ACTION = 0.3
-MAX_ANTI_IDLE_BONUS_PER_EPISODE = 15  # capped so exploring is worth less than actually resolving the stall
+MAX_ANTI_IDLE_BONUS_PER_EPISODE = (
+    15  # capped so exploring is worth less than actually resolving the stall
+)
 
 # Targeted incentive for a specific, repeatedly observed failure: a solid
 # block directly ahead at ground level, with clear room directly above it to
@@ -234,9 +252,25 @@ MAX_NARROW_GAP_BONUS_PER_EPISODE = 15
 # walking too, so instead this only pays once forward speed has been
 # unbroken for a while (RUNNING_STREAK_THRESHOLD frames) — short hop-bursts
 # that keep resetting to 0 never reach that, only a genuine sustained run does.
-RUNNING_STREAK_THRESHOLD = 10  # frames of unbroken forward speed before this starts paying
+RUNNING_STREAK_THRESHOLD = (
+    10  # frames of unbroken forward speed before this starts paying
+)
 RUNNING_BONUS_PER_FRAME = 0.1
 MAX_RUNNING_BONUS_PER_EPISODE = 15
+
+# Mirror image of the caution bonus: observed with Piranha Plants (type 13,
+# which pop in and out of pipes) specifically — the network freezes, bouncing
+# in place, even when the nearest enemy has clearance > 0 (i.e. it's actually
+# jumpable, geometrically) and isn't right on top of Mario. The caution bonus
+# doesn't apply here since it only fires at clearance == 0; nothing currently
+# tells the network that freezing in front of a *passable* threat is itself
+# the mistake. This rewards moving forward specifically in that situation —
+# nearby-but-not-adjacent enemy, clearly jumpable — instead of freezing.
+ADVANCE_DANGER_DX = (
+    60  # further out than CAUTION_DANGER_DX: "nearby" for this purpose, not point-blank
+)
+ADVANCE_BONUS_PER_FRAME = 0.2
+MAX_ADVANCE_BONUS_PER_EPISODE = 15
 
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
@@ -248,22 +282,33 @@ def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     if row < 0 or row >= TILE_ROWS:
         return 0
 
-    addr = TILE_BUFFER_BASE + page * TILE_ROWS * TILE_COLS_PER_PAGE + row * TILE_COLS_PER_PAGE + col
+    addr = (
+        TILE_BUFFER_BASE
+        + page * TILE_ROWS * TILE_COLS_PER_PAGE
+        + row * TILE_COLS_PER_PAGE
+        + col
+    )
     if addr < 0 or addr >= len(ram):
         return 0
 
     return 1 if ram[addr] != 0 else 0
 
 
-def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
+def get_tile(
+    ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
+) -> int:
     """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
     x = mario_world_x + dx
     y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
     return get_tile_absolute(ram, x, y)
 
 
-def enemy_ceiling_clearance(ram: np.ndarray, enemy_world_x: int, enemy_y: int,
-                             max_check: int = ENEMY_CEILING_CHECK_TILES) -> float:
+def enemy_ceiling_clearance(
+    ram: np.ndarray,
+    enemy_world_x: int,
+    enemy_y: int,
+    max_check: int = ENEMY_CEILING_CHECK_TILES,
+) -> float:
     """Counts how many empty tiles are directly above an enemy (up to max_check),
     normalized to 0-1. A low value means there's little or no room to jump onto
     the enemy from above; a high value means it's safe to land on top of it."""
@@ -290,9 +335,10 @@ def build_observation(ram: np.ndarray) -> list:
 
     obs = [
         mario_y / 240.0,
-        x_speed / 30.0,   # rough normalization (observed max speed ~28)
-        y_speed / 10.0,   # rough normalization (observed max speed ~5)
-        int(ram[ADDR_POWER_STATE]) / 2.0,  # 0=small, 1=big, 2=fire (rough normalization)
+        x_speed / 30.0,  # rough normalization (observed max speed ~28)
+        y_speed / 10.0,  # rough normalization (observed max speed ~5)
+        int(ram[ADDR_POWER_STATE])
+        / 2.0,  # 0=small, 1=big, 2=fire (rough normalization)
     ]
 
     world = int(np.int8(ram[ADDR_LEVEL_HI])) + 1
@@ -327,13 +373,24 @@ def build_observation(ram: np.ndarray) -> list:
     for i in range(N_ENEMY_SLOTS):
         if i < len(active_enemies):
             dx, dy, enemy_type, clearance, time_to_enemy = active_enemies[i]
-            obs.extend([1.0, dx / 256.0, dy / 240.0, enemy_type / 10.0, clearance, time_to_enemy])
+            obs.extend(
+                [
+                    1.0,
+                    dx / 256.0,
+                    dy / 240.0,
+                    enemy_type / 10.0,
+                    clearance,
+                    time_to_enemy,
+                ]
+            )
         else:
             obs.extend([0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
     for row_offset in TILE_ROW_OFFSETS:
         for col_offset in TILE_COL_OFFSETS:
-            obs.append(float(get_tile(ram, mario_world_x, mario_y, col_offset, row_offset)))
+            obs.append(
+                float(get_tile(ram, mario_world_x, mario_y, col_offset, row_offset))
+            )
 
     return obs
 
@@ -363,10 +420,16 @@ def debug_snapshot(ram: np.ndarray) -> dict:
             enemy_world_x = mario_world_x + dx
             clearance = enemy_ceiling_clearance(ram, enemy_world_x, enemy_y)
             time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
-            enemies.append({
-                "slot": i, "dx": dx, "dy": dy, "type": enemy_type,
-                "ceiling_clearance": clearance, "time_to_enemy": time_to_enemy,
-            })
+            enemies.append(
+                {
+                    "slot": i,
+                    "dx": dx,
+                    "dy": dy,
+                    "type": enemy_type,
+                    "ceiling_clearance": clearance,
+                    "time_to_enemy": time_to_enemy,
+                }
+            )
 
     tile_grid_lines = []
     for row_offset in TILE_ROW_OFFSETS:
@@ -375,7 +438,11 @@ def debug_snapshot(ram: np.ndarray) -> dict:
             if row_offset == 0 and col_offset == 0:
                 line += "M"
             else:
-                line += "X" if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset) else "."
+                line += (
+                    "X"
+                    if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset)
+                    else "."
+                )
         tile_grid_lines.append(line)
 
     return {
@@ -440,6 +507,7 @@ def eval_genomes(genomes, config, env, render=False):
         narrow_gap_bonus = 0.0
         running_bonus = 0.0
         running_streak = 0
+        advance_bonus = 0.0
         idle_tried_actions = set()
 
         # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
@@ -454,7 +522,10 @@ def eval_genomes(genomes, config, env, render=False):
         # accumulate an offset each time a level transition is detected, so
         # world_x is a true running total across the whole episode.
         level_offset = 0
-        prev_world_level = (int(np.int8(ram[ADDR_LEVEL_HI])), int(np.int8(ram[ADDR_LEVEL_LO])))
+        prev_world_level = (
+            int(np.int8(ram[ADDR_LEVEL_HI])),
+            int(np.int8(ram[ADDR_LEVEL_LO])),
+        )
         prev_raw_world_x = 0
 
         for step in range(MAX_STEPS_PER_EPISODE):
@@ -463,15 +534,21 @@ def eval_genomes(genomes, config, env, render=False):
             action = outputs_to_action(outputs)
 
             urgent = find_most_urgent_enemy(ram)
+            x_speed_now_early = int(np.int8(ram[ADDR_X_SPEED]))
             if urgent is not None:
                 dx, clearance = urgent
                 if clearance == 0.0 and abs(dx) < CAUTION_DANGER_DX:
                     # No safe way to jump over this enemy and it's very close:
                     # reward holding still or backing off, instead of freezing
                     # uselessly or pushing forward into it.
-                    x_speed_now = int(np.int8(ram[ADDR_X_SPEED]))
-                    if x_speed_now <= 0:
+                    if x_speed_now_early <= 0:
                         caution_bonus += CAUTION_BONUS_PER_FRAME
+                elif clearance > 0.0 and abs(dx) < ADVANCE_DANGER_DX:
+                    # The opposite case: this enemy is nearby but genuinely
+                    # jumpable and not right on top of Mario — freezing here
+                    # is the mistake, not the safe choice. Reward moving.
+                    if x_speed_now_early > 0:
+                        advance_bonus += ADVANCE_BONUS_PER_FRAME
 
             # Solid block directly ahead at ground level, with clear room right
             # above it to jump over: reward pressing jump here specifically,
@@ -492,7 +569,12 @@ def eval_genomes(genomes, config, env, render=False):
             # trying to move while NOT holding jump, instead of holding it
             # uselessly for hundreds of frames as observed.
             x_speed_now = int(np.int8(ram[ADDR_X_SPEED]))
-            if blocked_ahead and not room_above and not bool(action[8]) and x_speed_now != 0:
+            if (
+                blocked_ahead
+                and not room_above
+                and not bool(action[8])
+                and x_speed_now != 0
+            ):
                 narrow_gap_bonus += NARROW_GAP_BONUS_PER_FRAME
 
             # Reward committing to a sustained run once forward speed has held
@@ -520,7 +602,10 @@ def eval_genomes(genomes, config, env, render=False):
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
 
-            world_level = (int(np.int8(ram[ADDR_LEVEL_HI])), int(np.int8(ram[ADDR_LEVEL_LO])))
+            world_level = (
+                int(np.int8(ram[ADDR_LEVEL_HI])),
+                int(np.int8(ram[ADDR_LEVEL_LO])),
+            )
             if world_level != prev_world_level:
                 # Credit whatever distance was reached in the level just left,
                 # before its coordinate resets to 0 in the new level.
@@ -546,9 +631,16 @@ def eval_genomes(genomes, config, env, render=False):
             if terminated or truncated:
                 break
 
-            has_blocking_threat = urgent is not None and urgent[1] == 0.0 and abs(urgent[0]) < CAUTION_DANGER_DX
-            effective_stuck_limit = (STUCK_STEPS_LIMIT_WITH_THREAT if has_blocking_threat
-                                      else STUCK_STEPS_LIMIT_NO_THREAT)
+            has_blocking_threat = (
+                urgent is not None
+                and urgent[1] == 0.0
+                and abs(urgent[0]) < CAUTION_DANGER_DX
+            )
+            effective_stuck_limit = (
+                STUCK_STEPS_LIMIT_WITH_THREAT
+                if has_blocking_threat
+                else STUCK_STEPS_LIMIT_NO_THREAT
+            )
             if step - last_progress_step > effective_stuck_limit:
                 # Mario has been stuck too long given the current situation:
                 # no point continuing the episode
@@ -564,13 +656,25 @@ def eval_genomes(genomes, config, env, render=False):
         # stagnation/adjusted-fitness math.
         capped_caution_bonus = min(caution_bonus, MAX_CAUTION_BONUS_PER_EPISODE)
         capped_anti_idle_bonus = min(anti_idle_bonus, MAX_ANTI_IDLE_BONUS_PER_EPISODE)
-        capped_jump_when_blocked_bonus = min(jump_when_blocked_bonus, MAX_JUMP_WHEN_BLOCKED_BONUS_PER_EPISODE)
-        capped_narrow_gap_bonus = min(narrow_gap_bonus, MAX_NARROW_GAP_BONUS_PER_EPISODE)
+        capped_jump_when_blocked_bonus = min(
+            jump_when_blocked_bonus, MAX_JUMP_WHEN_BLOCKED_BONUS_PER_EPISODE
+        )
+        capped_narrow_gap_bonus = min(
+            narrow_gap_bonus, MAX_NARROW_GAP_BONUS_PER_EPISODE
+        )
         capped_running_bonus = min(running_bonus, MAX_RUNNING_BONUS_PER_EPISODE)
-        genome.fitness = max(0.0, float(max_world_x) - LIFE_LOST_PENALTY * lives_lost
-                              + capped_caution_bonus + capped_anti_idle_bonus
-                              + capped_jump_when_blocked_bonus + capped_narrow_gap_bonus
-                              + capped_running_bonus)
+        capped_advance_bonus = min(advance_bonus, MAX_ADVANCE_BONUS_PER_EPISODE)
+        genome.fitness = max(
+            0.0,
+            float(max_world_x)
+            - LIFE_LOST_PENALTY * lives_lost
+            + capped_caution_bonus
+            + capped_anti_idle_bonus
+            + capped_jump_when_blocked_bonus
+            + capped_narrow_gap_bonus
+            + capped_running_bonus
+            + capped_advance_bonus,
+        )
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
         # can tell, e.g., a genome with real distance progress apart from one
@@ -582,6 +686,7 @@ def eval_genomes(genomes, config, env, render=False):
         genome.jump_when_blocked_bonus = capped_jump_when_blocked_bonus
         genome.narrow_gap_bonus = capped_narrow_gap_bonus
         genome.running_bonus = capped_running_bonus
+        genome.advance_bonus = capped_advance_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -623,13 +728,22 @@ def load_run_info(run_dir: str) -> dict | None:
         return None
 
 
-def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
-                    start_time: datetime, end_time: datetime | None = None,
-                    best_fitness: float | None = None, best_raw_distance: float | None = None,
-                    best_caution_bonus: float | None = None, best_anti_idle_bonus: float | None = None,
-                    best_jump_when_blocked_bonus: float | None = None,
-                    best_narrow_gap_bonus: float | None = None, best_running_bonus: float | None = None,
-                    state: str | None = None):
+def write_run_info(
+    run_dir: str,
+    run_id: str,
+    parent_run_id: str | None,
+    start_time: datetime,
+    end_time: datetime | None = None,
+    best_fitness: float | None = None,
+    best_raw_distance: float | None = None,
+    best_caution_bonus: float | None = None,
+    best_anti_idle_bonus: float | None = None,
+    best_jump_when_blocked_bonus: float | None = None,
+    best_narrow_gap_bonus: float | None = None,
+    best_running_bonus: float | None = None,
+    best_advance_bonus: float | None = None,
+    state: str | None = None,
+):
     info = {
         "run_id": run_id,
         "parent_run_id": parent_run_id,
@@ -642,6 +756,7 @@ def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
         "best_jump_when_blocked_bonus": best_jump_when_blocked_bonus,
         "best_narrow_gap_bonus": best_narrow_gap_bonus,
         "best_running_bonus": best_running_bonus,
+        "best_advance_bonus": best_advance_bonus,
         # Which stable-retro state each episode started from (None = the
         # game's normal start). Fitness/raw_distance from a state-specific
         # run isn't on the same scale as a full-game run, since it skips
@@ -679,11 +794,21 @@ def summarize_run(run_dir: str, root_dir: str) -> dict:
     if info:
         run_id = info["run_id"]
         parent_run_id = info.get("parent_run_id")
-        start_time = datetime.fromisoformat(info["start_time"]) if info.get("start_time") else None
-        end_time = datetime.fromisoformat(info["end_time"]) if info.get("end_time") else None
+        start_time = (
+            datetime.fromisoformat(info["start_time"])
+            if info.get("start_time")
+            else None
+        )
+        end_time = (
+            datetime.fromisoformat(info["end_time"]) if info.get("end_time") else None
+        )
         best_fitness = info.get("best_fitness")
     else:
-        run_id = "current" if os.path.abspath(run_dir) == os.path.abspath(root_dir) else os.path.basename(run_dir)
+        run_id = (
+            "current"
+            if os.path.abspath(run_dir) == os.path.abspath(root_dir)
+            else os.path.basename(run_dir)
+        )
         parent_run_id = None
         start_time = None
         end_time = None
@@ -691,14 +816,18 @@ def summarize_run(run_dir: str, root_dir: str) -> dict:
 
     if best_fitness is None and latest_checkpoint:
         checkpoint_summary = read_checkpoint_summary(latest_checkpoint)
-        best_fitness = checkpoint_summary["best_fitness"] if checkpoint_summary else None
+        best_fitness = (
+            checkpoint_summary["best_fitness"] if checkpoint_summary else None
+        )
 
     if start_time is None and checkpoint_files:
         oldest = min(checkpoint_files, key=os.path.getmtime)
         start_time = datetime.fromtimestamp(os.path.getmtime(oldest)).astimezone()
 
     if end_time is None and latest_checkpoint:
-        end_time = datetime.fromtimestamp(os.path.getmtime(latest_checkpoint)).astimezone()
+        end_time = datetime.fromtimestamp(
+            os.path.getmtime(latest_checkpoint)
+        ).astimezone()
 
     return {
         "run_id": run_id,
@@ -719,7 +848,11 @@ def compute_run_arrows(runs: list) -> dict:
     arrows = {}
     for r in runs:
         parent = by_id.get(r["parent_run_id"]) if r["parent_run_id"] else None
-        if parent is None or parent["best_fitness"] is None or r["best_fitness"] is None:
+        if (
+            parent is None
+            or parent["best_fitness"] is None
+            or r["best_fitness"] is None
+        ):
             arrows[r["run_id"]] = " "
         elif r["best_fitness"] > parent["best_fitness"]:
             arrows[r["run_id"]] = "▲"
@@ -745,17 +878,27 @@ def format_duration(start: datetime | None, end: datetime | None) -> str:
 
 def format_run_line(r: dict, arrow: str) -> str:
     fitness_str = f"{r['best_fitness']:.0f}" if r["best_fitness"] is not None else "n/a"
-    start_str = r["start_time"].strftime("%Y-%m-%d %H:%M %Z") if r["start_time"] else "n/a"
-    end_str = r["end_time"].strftime("%Y-%m-%d %H:%M %Z") if r["end_time"] else "in progress"
+    start_str = (
+        r["start_time"].strftime("%Y-%m-%d %H:%M %Z") if r["start_time"] else "n/a"
+    )
+    end_str = (
+        r["end_time"].strftime("%Y-%m-%d %H:%M %Z") if r["end_time"] else "in progress"
+    )
     duration_str = format_duration(r["start_time"], r["end_time"])
     parent_str = r["parent_run_id"] or "-"
-    return (f"{arrow} {r['run_id']:<20} parent={parent_str:<20} "
-            f"start={start_str:<20} end={end_str:<20} "
-            f"dur={duration_str:<8} fitness={fitness_str}")
+    return (
+        f"{arrow} {r['run_id']:<20} parent={parent_str:<20} "
+        f"start={start_str:<20} end={end_str:<20} "
+        f"dur={duration_str:<8} fitness={fitness_str}"
+    )
 
 
-def pick_run_interactively(runs: list, arrows: dict, default_index: int,
-                            last_option_label: str = "[Start a fresh training run]") -> int:
+def pick_run_interactively(
+    runs: list,
+    arrows: dict,
+    default_index: int,
+    last_option_label: str = "[Start a fresh training run]",
+) -> int:
     """Full-screen arrow-key picker (curses). Up/Down to move, SPACE/ENTER to
     select, ESC to pick 'fresh start'. Auto-selects default_index if no key
     is pressed at all within PROMPT_TIMEOUT_SECONDS; once any key is pressed,
@@ -773,15 +916,25 @@ def pick_run_interactively(runs: list, arrows: dict, default_index: int,
 
         while True:
             stdscr.erase()
-            stdscr.addstr(0, 0, "Select a run to resume from  (up/down: move, SPACE/ENTER: select, ESC: fresh start)")
+            stdscr.addstr(
+                0,
+                0,
+                "Select a run to resume from  (up/down: move, SPACE/ENTER: select, ESC: fresh start)",
+            )
             if not interacted:
                 remaining = max(0.0, deadline - time.time())
-                stdscr.addstr(1, 0, f"Auto-selecting the default in {remaining:4.1f}s if no input...")
+                stdscr.addstr(
+                    1,
+                    0,
+                    f"Auto-selecting the default in {remaining:4.1f}s if no input...",
+                )
             for i, r in enumerate(runs):
                 marker = "> " if i == current else "  "
                 attr = curses.A_REVERSE if i == current else curses.A_NORMAL
                 tag = " (default)" if i == default_index else ""
-                line = f"{marker}{format_run_line(r, arrows.get(r['run_id'], ' '))}{tag}"
+                line = (
+                    f"{marker}{format_run_line(r, arrows.get(r['run_id'], ' '))}{tag}"
+                )
                 try:
                     stdscr.addstr(3 + i, 0, line, attr)
                 except curses.error:
@@ -789,7 +942,9 @@ def pick_run_interactively(runs: list, arrows: dict, default_index: int,
             marker = "> " if current == fresh_idx else "  "
             attr = curses.A_REVERSE if current == fresh_idx else curses.A_NORMAL
             try:
-                stdscr.addstr(3 + fresh_idx + 1, 0, f"{marker}{last_option_label}", attr)
+                stdscr.addstr(
+                    3 + fresh_idx + 1, 0, f"{marker}{last_option_label}", attr
+                )
             except curses.error:
                 pass
             stdscr.refresh()
@@ -802,11 +957,11 @@ def pick_run_interactively(runs: list, arrows: dict, default_index: int,
             if key == -1:
                 continue
             interacted = True
-            if key in (curses.KEY_UP, ord('k')):
+            if key in (curses.KEY_UP, ord("k")):
                 current = (current - 1) % n_options
-            elif key in (curses.KEY_DOWN, ord('j')):
+            elif key in (curses.KEY_DOWN, ord("j")):
                 current = (current + 1) % n_options
-            elif key in (10, 13, curses.KEY_ENTER, ord(' ')):
+            elif key in (10, 13, curses.KEY_ENTER, ord(" ")):
                 return current
             elif key == 27:
                 return fresh_idx
@@ -825,7 +980,7 @@ def find_available_states(game: str = "SuperMarioBros-Nes-v0") -> list:
         return []
     state_dir = os.path.dirname(reference)
     files = sorted(f for f in os.listdir(state_dir) if f.endswith(".state"))
-    return [f[:-len(".state")] for f in files]
+    return [f[: -len(".state")] for f in files]
 
 
 def pick_state_interactively(states: list, default_state: str) -> str:
@@ -846,11 +1001,19 @@ def pick_state_interactively(states: list, default_state: str) -> str:
 
         while True:
             stdscr.erase()
-            stdscr.addstr(0, 0, "Select the state to start each episode from  "
-                                 "(up/down: move, SPACE/ENTER: select, ESC: default)")
+            stdscr.addstr(
+                0,
+                0,
+                "Select the state to start each episode from  "
+                "(up/down: move, SPACE/ENTER: select, ESC: default)",
+            )
             if not interacted:
                 remaining = max(0.0, deadline - time.time())
-                stdscr.addstr(1, 0, f"Auto-selecting the default in {remaining:4.1f}s if no input...")
+                stdscr.addstr(
+                    1,
+                    0,
+                    f"Auto-selecting the default in {remaining:4.1f}s if no input...",
+                )
             for i, s in enumerate(states):
                 marker = "> " if i == current else "  "
                 attr = curses.A_REVERSE if i == current else curses.A_NORMAL
@@ -869,11 +1032,11 @@ def pick_state_interactively(states: list, default_state: str) -> str:
             if key == -1:
                 continue
             interacted = True
-            if key in (curses.KEY_UP, ord('k')):
+            if key in (curses.KEY_UP, ord("k")):
                 current = (current - 1) % len(states)
-            elif key in (curses.KEY_DOWN, ord('j')):
+            elif key in (curses.KEY_DOWN, ord("j")):
                 current = (current + 1) % len(states)
-            elif key in (10, 13, curses.KEY_ENTER, ord(' ')):
+            elif key in (10, 13, curses.KEY_ENTER, ord(" ")):
                 return states[current]
             elif key == 27:
                 return states[default_index]
@@ -881,7 +1044,9 @@ def pick_state_interactively(states: list, default_state: str) -> str:
     return curses.wrapper(_inner)
 
 
-def restore_checkpoint_with_config(filename: str, config: neat.Config) -> neat.Population:
+def restore_checkpoint_with_config(
+    filename: str, config: neat.Config
+) -> neat.Population:
     """Like neat.Checkpointer.restore_checkpoint, but rebuilds the population
     using the given (freshly loaded) config instead of the one frozen inside
     the checkpoint file. Without this, resuming from a checkpoint silently
@@ -908,9 +1073,14 @@ def restore_checkpoint_with_config(filename: str, config: neat.Config) -> neat.P
     return pop
 
 
-def run_training(config_path: str, n_generations: int | None = None, time_budget_minutes: float | None = None,
-                  checkpoint_prefix: str = "neat-checkpoint-", resume_from: str | None = None,
-                  state: str | None = None):
+def run_training(
+    config_path: str,
+    n_generations: int | None = None,
+    time_budget_minutes: float | None = None,
+    checkpoint_prefix: str = "neat-checkpoint-",
+    resume_from: str | None = None,
+    state: str | None = None,
+):
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -937,8 +1107,12 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         if resume_from:
             parent_dir = os.path.dirname(os.path.abspath(resume_from)) or run_dir
             parent_info = load_run_info(parent_dir)
-            parent_run_id = parent_info["run_id"] if parent_info else os.path.basename(parent_dir)
-            print(f"Resuming training from checkpoint: {resume_from} (using the current neat-config.txt)")
+            parent_run_id = (
+                parent_info["run_id"] if parent_info else os.path.basename(parent_dir)
+            )
+            print(
+                f"Resuming training from checkpoint: {resume_from} (using the current neat-config.txt)"
+            )
             population = restore_checkpoint_with_config(resume_from, config)
         else:
             population = neat.Population(config)
@@ -950,8 +1124,11 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         population.add_reporter(stats)
         population.add_reporter(neat.Checkpointer(5, filename_prefix=checkpoint_prefix))
 
-        env = stable_retro.make("SuperMarioBros-Nes-v0", state=state, render_mode=None) if state \
+        env = (
+            stable_retro.make("SuperMarioBros-Nes-v0", state=state, render_mode=None)
+            if state
             else stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
+        )
         if state:
             print(f"Starting each episode from state: {state}")
 
@@ -969,15 +1146,19 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                     elapsed = time.time() - start_time
                     remaining = budget_seconds - elapsed
                     if remaining <= 0:
-                        print(f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
-                              f"{gen_count} generation(s) in this run.")
+                        print(
+                            f"\nTime budget reached ({time_budget_minutes:.0f} min). Stopping after "
+                            f"{gen_count} generation(s) in this run."
+                        )
                         break
                     print(f"\n[Time budget: {remaining / 60:.1f} min remaining]")
                     population.run(eval_wrapper, 1)
                     gen_count += 1
 
-                    gen_best = max(population.population.values(),
-                                    key=lambda g: g.fitness if g.fitness is not None else -1)
+                    gen_best = max(
+                        population.population.values(),
+                        key=lambda g: g.fitness if g.fitness is not None else -1,
+                    )
                     raw_d = getattr(gen_best, "raw_distance", None)
                     lives = getattr(gen_best, "lives_lost", None)
                     bonus = getattr(gen_best, "caution_bonus", None)
@@ -985,13 +1166,18 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                     jwb_bonus = getattr(gen_best, "jump_when_blocked_bonus", None)
                     ng_bonus = getattr(gen_best, "narrow_gap_bonus", None)
                     run_bonus = getattr(gen_best, "running_bonus", None)
+                    adv_bonus = getattr(gen_best, "advance_bonus", None)
                     breakdown = ""
                     if raw_d is not None:
-                        breakdown = (f" (raw_distance={raw_d:.0f} lives_lost={lives} "
-                                     f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f} "
-                                     f"jump_when_blocked_bonus={jwb_bonus:.1f} narrow_gap_bonus={ng_bonus:.1f} "
-                                     f"running_bonus={run_bonus:.1f})")
-                    print(f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}")
+                        breakdown = (
+                            f" (raw_distance={raw_d:.0f} lives_lost={lives} "
+                            f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f} "
+                            f"jump_when_blocked_bonus={jwb_bonus:.1f} narrow_gap_bonus={ng_bonus:.1f} "
+                            f"running_bonus={run_bonus:.1f} advance_bonus={adv_bonus:.1f})"
+                        )
+                    print(
+                        f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}"
+                    )
                 winner = stats.best_genome()
             else:
                 winner = population.run(eval_wrapper, n_generations)
@@ -1002,10 +1188,17 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                 best_so_far = best_genome_so_far.fitness
                 best_raw_distance = getattr(best_genome_so_far, "raw_distance", None)
                 best_caution_bonus = getattr(best_genome_so_far, "caution_bonus", None)
-                best_anti_idle_bonus = getattr(best_genome_so_far, "anti_idle_bonus", None)
-                best_jump_when_blocked_bonus = getattr(best_genome_so_far, "jump_when_blocked_bonus", None)
-                best_narrow_gap_bonus = getattr(best_genome_so_far, "narrow_gap_bonus", None)
+                best_anti_idle_bonus = getattr(
+                    best_genome_so_far, "anti_idle_bonus", None
+                )
+                best_jump_when_blocked_bonus = getattr(
+                    best_genome_so_far, "jump_when_blocked_bonus", None
+                )
+                best_narrow_gap_bonus = getattr(
+                    best_genome_so_far, "narrow_gap_bonus", None
+                )
                 best_running_bonus = getattr(best_genome_so_far, "running_bonus", None)
+                best_advance_bonus = getattr(best_genome_so_far, "advance_bonus", None)
             except Exception:
                 best_so_far = None
                 best_raw_distance = None
@@ -1014,13 +1207,23 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                 best_jump_when_blocked_bonus = None
                 best_narrow_gap_bonus = None
                 best_running_bonus = None
-            write_run_info(run_dir, run_id, parent_run_id, run_start_time,
-                            end_time=datetime.now().astimezone(), best_fitness=best_so_far,
-                            best_raw_distance=best_raw_distance, best_caution_bonus=best_caution_bonus,
-                            best_anti_idle_bonus=best_anti_idle_bonus,
-                            best_jump_when_blocked_bonus=best_jump_when_blocked_bonus,
-                            best_narrow_gap_bonus=best_narrow_gap_bonus,
-                            best_running_bonus=best_running_bonus, state=state)
+                best_advance_bonus = None
+            write_run_info(
+                run_dir,
+                run_id,
+                parent_run_id,
+                run_start_time,
+                end_time=datetime.now().astimezone(),
+                best_fitness=best_so_far,
+                best_raw_distance=best_raw_distance,
+                best_caution_bonus=best_caution_bonus,
+                best_anti_idle_bonus=best_anti_idle_bonus,
+                best_jump_when_blocked_bonus=best_jump_when_blocked_bonus,
+                best_narrow_gap_bonus=best_narrow_gap_bonus,
+                best_running_bonus=best_running_bonus,
+                best_advance_bonus=best_advance_bonus,
+                state=state,
+            )
 
         elapsed = time.time() - start_time
 
@@ -1033,11 +1236,14 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         winner_jwb_bonus = getattr(winner, "jump_when_blocked_bonus", None)
         winner_ng_bonus = getattr(winner, "narrow_gap_bonus", None)
         winner_run_bonus = getattr(winner, "running_bonus", None)
+        winner_adv_bonus = getattr(winner, "advance_bonus", None)
         if winner_raw_d is not None:
-            print(f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
-                  f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f}, "
-                  f"jump-when-blocked bonus: {winner_jwb_bonus:.1f}, narrow-gap bonus: {winner_ng_bonus:.1f}, "
-                  f"running bonus: {winner_run_bonus:.1f})")
+            print(
+                f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
+                f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f}, "
+                f"jump-when-blocked bonus: {winner_jwb_bonus:.1f}, narrow-gap bonus: {winner_ng_bonus:.1f}, "
+                f"running bonus: {winner_run_bonus:.1f}, advance bonus: {winner_adv_bonus:.1f})"
+            )
 
         with open("winner.pkl", "wb") as f:
             pickle.dump(winner, f)
@@ -1054,29 +1260,32 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NEAT training on Super Mario Bros.")
     parser.add_argument(
-        "--minutes", "-m",
+        "--minutes",
+        "-m",
         type=str,
         default=None,
         help="Max time to run for. Plain number = minutes (e.g. '30'), "
-             "or 'XXhYYm' (e.g. '1h30m'), or 'XXh' (e.g. '2h'). "
-             "If omitted, you'll be prompted interactively.",
+        "or 'XXhYYm' (e.g. '1h30m'), or 'XXh' (e.g. '2h'). "
+        "If omitted, you'll be prompted interactively.",
     )
     parser.add_argument(
-        "--run", "-r",
+        "--run",
+        "-r",
         type=str,
         default=None,
         help="Run ID (or folder name) to resume from, skipping the interactive picker. "
-             "Use 'none' to force a fresh start even if previous runs exist.",
+        "Use 'none' to force a fresh start even if previous runs exist.",
     )
     parser.add_argument(
-        "--state", "-s",
+        "--state",
+        "-s",
         type=str,
         default=None,
         help="stable-retro state to start every episode from (e.g. 'Level1-2-custom'), instead of "
-             "prompting interactively. Useful for training on a specific stretch of the game "
-             "directly, without re-playing everything before it each episode. If omitted, a "
-             "full-screen picker lists every available state (bundled ones plus any custom ones "
-             "saved via probe_level_type.py's 'S' key), defaulting to Level1-1 after 15s of no input.",
+        "prompting interactively. Useful for training on a specific stretch of the game "
+        "directly, without re-playing everything before it each episode. If omitted, a "
+        "full-screen picker lists every available state (bundled ones plus any custom ones "
+        "saved via probe_level_type.py's 'S' key), defaulting to Level1-1 after 15s of no input.",
     )
     args = parser.parse_args()
 
@@ -1093,7 +1302,10 @@ if __name__ == "__main__":
     run_dirs = find_run_dirs(search_root)
     runs = [summarize_run(d, search_root) for d in run_dirs]
     # Most recently started first; runs with no known start time sort last.
-    runs.sort(key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    runs.sort(
+        key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
 
     resume_path = None
 
@@ -1102,7 +1314,11 @@ if __name__ == "__main__":
             print("Starting a fresh training run (forced via --run none).")
         else:
             match = next(
-                (r for r in runs if r["run_id"] == args.run or os.path.basename(r["dir"]) == args.run),
+                (
+                    r
+                    for r in runs
+                    if r["run_id"] == args.run or os.path.basename(r["dir"]) == args.run
+                ),
                 None,
             )
             if match is None:
@@ -1130,13 +1346,19 @@ if __name__ == "__main__":
             print("No stable-retro states found: using the game's default start.")
             state = None
         else:
-            default_state = "Level1-1" if "Level1-1" in available_states else available_states[0]
+            default_state = (
+                "Level1-1" if "Level1-1" in available_states else available_states[0]
+            )
             state = pick_state_interactively(available_states, default_state)
             print(f"Using state: {state}")
 
     if resume_path:
-        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=resume_path,
-                     state=state)
+        run_training(
+            config_path,
+            time_budget_minutes=time_budget_minutes,
+            resume_from=resume_path,
+            state=state,
+        )
     else:
         print(f"Running for up to {time_budget_minutes:.1f} minutes.")
         run_training(config_path, time_budget_minutes=time_budget_minutes, state=state)

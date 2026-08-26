@@ -11,6 +11,12 @@ Which run to load from:
   defaults to the current directory's run if there is one, otherwise to
   the most recently started run.
 
+Which state to start from: auto-detected from the chosen run's run_info.json
+(the same state it was trained with, if train_neat.py was run with --state) —
+watching a genome from the game's normal start when it was actually trained
+starting mid-level would put it somewhere it's never seen, and it wouldn't
+know what to do. Override with --state if you need to.
+
 On every death, prints the observation the network was actually seeing in
 the steps leading up to it (Mario's state, nearby enemies, jump-clearance
 estimate, whether the jump button was pressed), to help diagnose whether a
@@ -77,7 +83,14 @@ VIDEO_FPS = 30
 
 def find_winner_dirs(root_dir: str) -> list:
     """Finds every directory under root_dir that contains a winner.pkl."""
-    return sorted({os.path.dirname(p) for p in glob.glob(os.path.join(root_dir, "**", "winner.pkl"), recursive=True)})
+    return sorted(
+        {
+            os.path.dirname(p)
+            for p in glob.glob(
+                os.path.join(root_dir, "**", "winner.pkl"), recursive=True
+            )
+        }
+    )
 
 
 def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
@@ -104,16 +117,28 @@ def resolve_winner_path(run_arg: str | None, search_root: str) -> str:
 
     runs = [summarize_run(d, search_root) for d in winner_dirs]
     # Most recently started first; runs with no known start time sort last.
-    runs.sort(key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    runs.sort(
+        key=lambda r: r["start_time"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
     arrows = compute_run_arrows(runs)
 
     # Default to the winner.pkl sitting directly in the current directory (the
     # active, not-yet-archived run), if there is one; otherwise the most
     # recently started run (which, now that the list is sorted, is index 0).
-    cwd_index = next((i for i, r in enumerate(runs) if os.path.abspath(r["dir"]) == os.path.abspath(search_root)), None)
+    cwd_index = next(
+        (
+            i
+            for i, r in enumerate(runs)
+            if os.path.abspath(r["dir"]) == os.path.abspath(search_root)
+        ),
+        None,
+    )
     default_index = cwd_index if cwd_index is not None else 0
 
-    choice = pick_run_interactively(runs, arrows, default_index, last_option_label="[Cancel]")
+    choice = pick_run_interactively(
+        runs, arrows, default_index, last_option_label="[Cancel]"
+    )
     if choice == len(runs):
         print("Cancelled.")
         sys.exit(0)
@@ -126,8 +151,10 @@ def save_death_video(frames, step: int, out_dir: str) -> str | None:
     frames, or a write error) — never raises, since a failed recording
     shouldn't interrupt watching the run."""
     if imageio is None:
-        print("  (video not saved: imageio isn't installed — "
-              "run `pip install 'imageio[ffmpeg]'` to enable death clips)")
+        print(
+            "  (video not saved: imageio isn't installed — "
+            "run `pip install 'imageio[ffmpeg]'` to enable death clips)"
+        )
         return None
     if not frames:
         return None
@@ -155,8 +182,10 @@ def print_death_trace(trace):
             )
         else:
             enemy_str = "no enemies in range"
-        print(f"    [step {step}] y={snap['mario_y']:3d} x_speed={snap['x_speed']:+3d} "
-              f"y_speed={snap['y_speed']:+3d} jump_pressed={jump_pressed}  |  {enemy_str}")
+        print(
+            f"    [step {step}] y={snap['mario_y']:3d} x_speed={snap['x_speed']:+3d} "
+            f"y_speed={snap['y_speed']:+3d} jump_pressed={jump_pressed}  |  {enemy_str}"
+        )
 
     last_snap = trace[-1][1]
     print("  Tile grid at the moment of death (X = solid, . = empty, M = Mario):")
@@ -164,11 +193,23 @@ def print_death_trace(trace):
         print(f"    {line}")
 
 
-def main(run_arg: str | None = None):
+def main(run_arg: str | None = None, state_arg: str | None = None):
     local_dir = os.path.dirname(os.path.abspath(__file__))
     config_path = os.path.join(local_dir, "neat-config.txt")
 
     winner_path = resolve_winner_path(run_arg, os.getcwd())
+
+    # The genome only makes sense in whatever situation it was actually
+    # trained in — if it was trained with --state (e.g. starting mid-level,
+    # via train_neat.py), watching it from the game's normal default start
+    # puts it somewhere it's never seen, and it behaves accordingly (usually
+    # not moving at all). An explicit --state always wins; otherwise, use
+    # whatever state this run's run_info.json says it was trained with.
+    if state_arg is not None:
+        state = state_arg
+    else:
+        run_info = load_run_info(os.path.dirname(winner_path))
+        state = run_info.get("state") if run_info else None
 
     log_path = os.path.join(os.getcwd(), f"watch-{datetime.now():%Y%m%d-%H%M%S}.log")
     original_stdout = sys.stdout
@@ -180,6 +221,8 @@ def main(run_arg: str | None = None):
     try:
         print(f"Logging full output to: {log_path}")
         print(f"Loading genome from: {winner_path}")
+        if state:
+            print(f"Starting from state: {state}")
 
         config = neat.Config(
             neat.DefaultGenome,
@@ -194,7 +237,11 @@ def main(run_arg: str | None = None):
 
         net = neat.nn.FeedForwardNetwork.create(winner, config)
 
-        env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
+        env = (
+            stable_retro.make("SuperMarioBros-Nes-v0", state=state, render_mode="human")
+            if state
+            else stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
+        )
         obs, info = env.reset()
         ram = env.get_ram()
         env.render()  # forces the pyglet window to be created, so we can hook key events
@@ -202,7 +249,11 @@ def main(run_arg: str | None = None):
         speed_state = {"multiplier": 1.0, "paused": False}
 
         def on_key_press(symbol, modifiers):
-            if symbol in (pyglet.window.key.PLUS, pyglet.window.key.EQUAL, pyglet.window.key.NUM_ADD):
+            if symbol in (
+                pyglet.window.key.PLUS,
+                pyglet.window.key.EQUAL,
+                pyglet.window.key.NUM_ADD,
+            ):
                 speed_state["multiplier"] = min(speed_state["multiplier"] * 1.5, 16.0)
                 print(f"Speed: {speed_state['multiplier']:.2f}x")
             elif symbol in (pyglet.window.key.MINUS, pyglet.window.key.NUM_SUBTRACT):
@@ -211,7 +262,11 @@ def main(run_arg: str | None = None):
             elif symbol == pyglet.window.key._0:
                 speed_state["multiplier"] = 1.0
                 print("Speed reset to 1.00x")
-            elif symbol in (pyglet.window.key.SPACE, pyglet.window.key.ENTER, pyglet.window.key.RETURN):
+            elif symbol in (
+                pyglet.window.key.SPACE,
+                pyglet.window.key.ENTER,
+                pyglet.window.key.RETURN,
+            ):
                 speed_state["paused"] = not speed_state["paused"]
                 print("PAUSED" if speed_state["paused"] else "RESUMED")
 
@@ -232,13 +287,18 @@ def main(run_arg: str | None = None):
         jwb_bonus = getattr(winner, "jump_when_blocked_bonus", None)
         ng_bonus = getattr(winner, "narrow_gap_bonus", None)
         run_bonus = getattr(winner, "running_bonus", None)
+        adv_bonus = getattr(winner, "advance_bonus", None)
         if raw_d is not None:
-            print(f"  (raw distance during training: {raw_d:.0f}, lives lost: {lives}, "
-                  f"caution bonus: {bonus:.1f}, anti-idle bonus: {idle_bonus:.1f}, "
-                  f"jump-when-blocked bonus: {jwb_bonus:.1f}, narrow-gap bonus: {ng_bonus:.1f}, "
-                  f"running bonus: {run_bonus:.1f})")
-        print("Controls (game window must have focus): '+' speeds up, '-' slows down, "
-              "'0' resets to 1x, SPACE/ENTER pauses/resumes.")
+            print(
+                f"  (raw distance during training: {raw_d:.0f}, lives lost: {lives}, "
+                f"caution bonus: {bonus:.1f}, anti-idle bonus: {idle_bonus:.1f}, "
+                f"jump-when-blocked bonus: {jwb_bonus:.1f}, narrow-gap bonus: {ng_bonus:.1f}, "
+                f"running bonus: {run_bonus:.1f}, advance bonus: {adv_bonus:.1f})"
+            )
+        print(
+            "Controls (game window must have focus): '+' speeds up, '-' slows down, "
+            "'0' resets to 1x, SPACE/ENTER pauses/resumes."
+        )
         print("Starting the game...\n")
 
         step = 0
@@ -272,15 +332,19 @@ def main(run_arg: str | None = None):
                 # shown here, not in this frame or after.
                 state_change_reported = True
                 context = [e for e in history if e[0] < step][-CONTEXT_STEPS_TO_SHOW:]
-                print(f"\n[step {step}] Object Pause flag set (0x0747 = {player_state}) — "
-                      f"death sequence likely starting now. Steps leading up to this moment:")
+                print(
+                    f"\n[step {step}] Object Pause flag set (0x0747 = {player_state}) — "
+                    f"death sequence likely starting now. Steps leading up to this moment:"
+                )
                 if context:
                     print_death_trace(context)
                 else:
                     print("  (not enough history before this point to show)")
                 video_path = save_death_video(list(video_frames), step, os.getcwd())
                 if video_path:
-                    print(f"  Clip of the {len(video_frames)} frames before this death: {video_path}")
+                    print(
+                        f"  Clip of the {len(video_frames)} frames before this death: {video_path}"
+                    )
 
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
@@ -291,9 +355,11 @@ def main(run_arg: str | None = None):
 
             lives = info.get("lives")
             if lives is not None and prev_lives is not None and lives < prev_lives:
-                print(f"[step {step}] Mario lost a life (registered by the game here; "
-                      f"the actual collision was reported above, near the start of the fall). "
-                      f"Position reached: {world_x} (max so far: {max_world_x})")
+                print(
+                    f"[step {step}] Mario lost a life (registered by the game here; "
+                    f"the actual collision was reported above, near the start of the fall). "
+                    f"Position reached: {world_x} (max so far: {max_world_x})"
+                )
             prev_lives = lives
 
             env.render()
@@ -323,14 +389,25 @@ def main(run_arg: str | None = None):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Watch the best genome from a training run play Super Mario Bros.")
+    parser = argparse.ArgumentParser(
+        description="Watch the best genome from a training run play Super Mario Bros."
+    )
     parser.add_argument(
-        "--run", "-r",
+        "--run",
+        "-r",
         type=str,
         default=None,
         help="Run ID (or folder name) to load winner.pkl from, skipping the interactive picker. "
-             "If omitted: uses winner.pkl in the current directory if present, otherwise "
-             "shows a picker over every archived run that has one.",
+        "If omitted: uses winner.pkl in the current directory if present, otherwise "
+        "shows a picker over every archived run that has one.",
+    )
+    parser.add_argument(
+        "--state",
+        "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start from, overriding whatever this run's run_info.json "
+        "says it was trained with (auto-detected by default — you normally don't need this).",
     )
     args = parser.parse_args()
-    main(args.run)
+    main(args.run, args.state)
