@@ -91,3 +91,6 @@ winner.pkl
 
 # Binary files
 *.nes
+
+# Media files
+*.mp4
