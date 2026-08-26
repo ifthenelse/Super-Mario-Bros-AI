@@ -28,12 +28,18 @@ Controls (game window must have focus):
   2            - load Level1-4 (castle)
   3            - load Level2-1 (normal; walk right through the whole level
                  and the pipe at the end to reach 2-2, a water level)
+  S            - save the CURRENT emulator state as a custom, reusable
+                 stable-retro state (see CUSTOM_SAVE_STATE_NAME below) —
+                 useful for training on a specific stretch of the game that
+                 has no bundled state of its own (e.g. the start of 1-2)
   +/-          - speed up / slow down emulation
   0            - reset speed to 1x
   SPACE        - pause / resume
   P            - print the current values on demand
 """
 
+import gzip
+import os
 import time
 
 import numpy as np
@@ -49,6 +55,14 @@ ADDR_OBJECT_PAUSE = 0x0747  # candidate: "Object Pause" — freezes all action e
 ADDR_LEVEL_HI = 1887        # validated (from data.json): world index
 ADDR_LEVEL_LO = 1884        # validated (from data.json): level-within-world index
 
+# Name used when saving a custom savestate with 'S' (see save_state below).
+# stable-retro's SuperMarioBros-Nes-v0 integration only ships states for the
+# first level of each world (Level1-1, Level2-1, ...) plus Level1-4 — there's
+# no built-in "Level1-2" or similar. This lets you create one: walk manually
+# to wherever you want an episode to start, press S, then pass
+# `--state Level1-2-custom` to train_neat.py.
+CUSTOM_SAVE_STATE_NAME = "Level1-2-custom"
+
 # How many frames to dump in full detail right after a world-level change is
 # detected, to check whether the RAM-page-based position (used for the tile
 # grid) and the xscrollHi/xscrollLo-based position (used for fitness) agree
@@ -60,6 +74,22 @@ QUICK_LOAD_STATES = {
     pyglet.window.key._2: "Level1-4",
     pyglet.window.key._3: "Level2-1",
 }
+
+
+def save_state(env, name: str) -> str:
+    """Saves the emulator's current state as a reusable stable-retro state
+    file, in the same folder as the integration's own bundled states (found
+    via stable-retro's own lookup, not guessed), so `--state <name>` later
+    finds it the same way it finds the built-in ones."""
+    # Any bundled state works as a reference point to find the right folder —
+    # Level1-1.state always exists for this integration.
+    reference_path = stable_retro.data.get_file_path("SuperMarioBros-Nes-v0", "Level1-1.state")
+    target_dir = os.path.dirname(reference_path)
+    target_path = os.path.join(target_dir, f"{name}.state")
+    raw_state = env.unwrapped.em.get_state()
+    with gzip.open(target_path, "wb") as f:
+        f.write(raw_state)
+    return target_path
 
 
 def print_tile_grid(ram, mario_world_x, mario_y):
@@ -90,6 +120,7 @@ def main():
         "paused": False,
         "load_request": None,
         "print_now": False,
+        "save_request": False,
     }
     shared["env"].reset()
     shared["env"].render()
@@ -125,6 +156,8 @@ def main():
                 print("PAUSED" if shared["paused"] else "RESUMED")
             elif symbol == pyglet.window.key.P:
                 shared["print_now"] = True
+            elif symbol == pyglet.window.key.S:
+                shared["save_request"] = True
             elif symbol in QUICK_LOAD_STATES:
                 shared["load_request"] = QUICK_LOAD_STATES[symbol]
 
@@ -150,7 +183,9 @@ def main():
     attach_handlers(shared["env"])
 
     print("Manual probe started. See the docstring at the top of this file for controls.")
-    print("Press 1/2/3 to quick-load Level1-1 / Level1-4 / Level2-1. Press P to print values on demand.\n")
+    print("Press 1/2/3 to quick-load Level1-1 / Level1-4 / Level2-1. Press P to print values on demand.")
+    print(f"Press S to save the current position as a reusable state (default name: "
+          f"'{CUSTOM_SAVE_STATE_NAME}').\n")
 
     frame_time = 1.0 / 60.0
     print_every = 60  # once per second at normal speed
@@ -176,6 +211,12 @@ def main():
             shared["action"][:] = 0
             step = 0
             continue
+
+        if shared["save_request"]:
+            shared["save_request"] = False
+            saved_path = save_state(env, CUSTOM_SAVE_STATE_NAME)
+            print(f"\n>>> Saved current state to: {saved_path}")
+            print(f">>> Use it with: python train_neat.py --state {CUSTOM_SAVE_STATE_NAME}\n")
 
         if shared["paused"]:
             env.render()
