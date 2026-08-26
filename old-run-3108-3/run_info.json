@@ -1,0 +1,11 @@
+{
+  "run_id": "run-20260825-234847",
+  "parent_run_id": "run-20260825-222234",
+  "start_time": "2026-08-25T23:48:47.719953+02:00",
+  "end_time": "2026-08-26T00:08:51.996310+02:00",
+  "best_fitness": 3108.4,
+  "best_raw_distance": 3097.0,
+  "best_caution_bonus": 0.0,
+  "best_anti_idle_bonus": 1.8,
+  "best_jump_when_blocked_bonus": 9.600000000000001
+}
