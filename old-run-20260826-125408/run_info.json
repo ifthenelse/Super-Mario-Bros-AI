@@ -1,0 +1,14 @@
+{
+  "run_id": "run-20260826-122935",
+  "parent_run_id": "run-20260826-104312",
+  "start_time": "2026-08-26T12:29:35.066209+02:00",
+  "end_time": null,
+  "best_fitness": null,
+  "best_raw_distance": null,
+  "best_caution_bonus": null,
+  "best_anti_idle_bonus": null,
+  "best_jump_when_blocked_bonus": null,
+  "best_narrow_gap_bonus": null,
+  "best_running_bonus": null,
+  "state": "Level1-2"
+}
