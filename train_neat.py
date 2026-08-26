@@ -628,7 +628,8 @@ def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
                     best_fitness: float | None = None, best_raw_distance: float | None = None,
                     best_caution_bonus: float | None = None, best_anti_idle_bonus: float | None = None,
                     best_jump_when_blocked_bonus: float | None = None,
-                    best_narrow_gap_bonus: float | None = None, best_running_bonus: float | None = None):
+                    best_narrow_gap_bonus: float | None = None, best_running_bonus: float | None = None,
+                    state: str | None = None):
     info = {
         "run_id": run_id,
         "parent_run_id": parent_run_id,
@@ -641,6 +642,12 @@ def write_run_info(run_dir: str, run_id: str, parent_run_id: str | None,
         "best_jump_when_blocked_bonus": best_jump_when_blocked_bonus,
         "best_narrow_gap_bonus": best_narrow_gap_bonus,
         "best_running_bonus": best_running_bonus,
+        # Which stable-retro state each episode started from (None = the
+        # game's normal start). Fitness/raw_distance from a state-specific
+        # run isn't on the same scale as a full-game run, since it skips
+        # everything before that state — worth checking before comparing
+        # "best fitness" across runs with different states.
+        "state": state,
     }
     with open(os.path.join(run_dir, RUN_INFO_FILENAME), "w") as f:
         json.dump(info, f, indent=2)
@@ -807,6 +814,73 @@ def pick_run_interactively(runs: list, arrows: dict, default_index: int,
     return curses.wrapper(_inner)
 
 
+def find_available_states(game: str = "SuperMarioBros-Nes-v0") -> list:
+    """Lists every stable-retro state available for the game — both the ones
+    bundled with the integration (Level1-1, Level2-1, ...) and any custom
+    ones saved via probe_level_type.py's 'S' key (e.g. Level1-2-custom).
+    Found by locating a known-good bundled state and listing its folder,
+    rather than guessing the path, so it stays correct across installs."""
+    reference = stable_retro.data.get_file_path(game, "Level1-1.state")
+    if reference is None:
+        return []
+    state_dir = os.path.dirname(reference)
+    files = sorted(f for f in os.listdir(state_dir) if f.endswith(".state"))
+    return [f[:-len(".state")] for f in files]
+
+
+def pick_state_interactively(states: list, default_state: str) -> str:
+    """Full-screen picker (curses) for which stable-retro state to start each
+    training episode from. Same interaction model as pick_run_interactively:
+    up/down to move, SPACE/ENTER to select, ESC or a PROMPT_TIMEOUT_SECONDS
+    timeout with no key pressed at all falls back to default_state."""
+    import curses
+
+    default_index = states.index(default_state) if default_state in states else 0
+
+    def _inner(stdscr):
+        curses.curs_set(0)
+        stdscr.nodelay(True)
+        current = default_index
+        deadline = time.time() + PROMPT_TIMEOUT_SECONDS
+        interacted = False
+
+        while True:
+            stdscr.erase()
+            stdscr.addstr(0, 0, "Select the state to start each episode from  "
+                                 "(up/down: move, SPACE/ENTER: select, ESC: default)")
+            if not interacted:
+                remaining = max(0.0, deadline - time.time())
+                stdscr.addstr(1, 0, f"Auto-selecting the default in {remaining:4.1f}s if no input...")
+            for i, s in enumerate(states):
+                marker = "> " if i == current else "  "
+                attr = curses.A_REVERSE if i == current else curses.A_NORMAL
+                tag = " (default)" if i == default_index else ""
+                try:
+                    stdscr.addstr(3 + i, 0, f"{marker}{s}{tag}", attr)
+                except curses.error:
+                    pass
+            stdscr.refresh()
+
+            if not interacted and time.time() > deadline:
+                return states[default_index]
+
+            stdscr.timeout(150)
+            key = stdscr.getch()
+            if key == -1:
+                continue
+            interacted = True
+            if key in (curses.KEY_UP, ord('k')):
+                current = (current - 1) % len(states)
+            elif key in (curses.KEY_DOWN, ord('j')):
+                current = (current + 1) % len(states)
+            elif key in (10, 13, curses.KEY_ENTER, ord(' ')):
+                return states[current]
+            elif key == 27:
+                return states[default_index]
+
+    return curses.wrapper(_inner)
+
+
 def restore_checkpoint_with_config(filename: str, config: neat.Config) -> neat.Population:
     """Like neat.Checkpointer.restore_checkpoint, but rebuilds the population
     using the given (freshly loaded) config instead of the one frozen inside
@@ -835,7 +909,8 @@ def restore_checkpoint_with_config(filename: str, config: neat.Config) -> neat.P
 
 
 def run_training(config_path: str, n_generations: int | None = None, time_budget_minutes: float | None = None,
-                  checkpoint_prefix: str = "neat-checkpoint-", resume_from: str | None = None):
+                  checkpoint_prefix: str = "neat-checkpoint-", resume_from: str | None = None,
+                  state: str | None = None):
     config = neat.Config(
         neat.DefaultGenome,
         neat.DefaultReproduction,
@@ -868,14 +943,17 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
         else:
             population = neat.Population(config)
 
-        write_run_info(run_dir, run_id, parent_run_id, run_start_time)
+        write_run_info(run_dir, run_id, parent_run_id, run_start_time, state=state)
 
         population.add_reporter(neat.StdOutReporter(True))
         stats = neat.StatisticsReporter()
         population.add_reporter(stats)
         population.add_reporter(neat.Checkpointer(5, filename_prefix=checkpoint_prefix))
 
-        env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
+        env = stable_retro.make("SuperMarioBros-Nes-v0", state=state, render_mode=None) if state \
+            else stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
+        if state:
+            print(f"Starting each episode from state: {state}")
 
         def eval_wrapper(genomes, cfg):
             eval_genomes(genomes, cfg, env)
@@ -942,7 +1020,7 @@ def run_training(config_path: str, n_generations: int | None = None, time_budget
                             best_anti_idle_bonus=best_anti_idle_bonus,
                             best_jump_when_blocked_bonus=best_jump_when_blocked_bonus,
                             best_narrow_gap_bonus=best_narrow_gap_bonus,
-                            best_running_bonus=best_running_bonus)
+                            best_running_bonus=best_running_bonus, state=state)
 
         elapsed = time.time() - start_time
 
@@ -990,6 +1068,16 @@ if __name__ == "__main__":
         help="Run ID (or folder name) to resume from, skipping the interactive picker. "
              "Use 'none' to force a fresh start even if previous runs exist.",
     )
+    parser.add_argument(
+        "--state", "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start every episode from (e.g. 'Level1-2-custom'), instead of "
+             "prompting interactively. Useful for training on a specific stretch of the game "
+             "directly, without re-playing everything before it each episode. If omitted, a "
+             "full-screen picker lists every available state (bundled ones plus any custom ones "
+             "saved via probe_level_type.py's 'S' key), defaulting to Level1-1 after 15s of no input.",
+    )
     args = parser.parse_args()
 
     try:
@@ -1034,8 +1122,21 @@ if __name__ == "__main__":
             resume_path = runs[choice]["resume_checkpoint"]
             print(f"\nResuming from run: {runs[choice]['run_id']}")
 
+    if args.state is not None:
+        state = args.state
+    else:
+        available_states = find_available_states()
+        if not available_states:
+            print("No stable-retro states found: using the game's default start.")
+            state = None
+        else:
+            default_state = "Level1-1" if "Level1-1" in available_states else available_states[0]
+            state = pick_state_interactively(available_states, default_state)
+            print(f"Using state: {state}")
+
     if resume_path:
-        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=resume_path)
+        run_training(config_path, time_budget_minutes=time_budget_minutes, resume_from=resume_path,
+                     state=state)
     else:
         print(f"Running for up to {time_budget_minutes:.1f} minutes.")
-        run_training(config_path, time_budget_minutes=time_budget_minutes)
+        run_training(config_path, time_budget_minutes=time_budget_minutes, state=state)
