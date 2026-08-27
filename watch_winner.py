@@ -79,7 +79,7 @@ CONTEXT_STEPS_TO_SHOW = 40
 # which has repeatedly turned out to be the faster way to spot what's going
 # wrong. Kept separate from HISTORY_BUFFER_SIZE since raw RGB frames cost
 # far more memory than the small per-frame dicts.
-VIDEO_FRAMES_BEFORE_DEATH = 100
+VIDEO_FRAMES_BEFORE_DEATH = 500
 VIDEO_FPS = 30
 
 
