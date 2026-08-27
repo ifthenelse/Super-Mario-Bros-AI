@@ -285,7 +285,17 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
         prev_lives = info.get("lives")
         history = deque(maxlen=HISTORY_BUFFER_SIZE)
         video_frames = deque(maxlen=VIDEO_FRAMES_BEFORE_DEATH)
-        state_change_reported = False
+        # Object Pause (0x0747) fires for more than just deaths — it also
+        # fires when Big/Fire Mario gets hit and shrinks back to Small
+        # without losing a life (confirmed: watched exactly this happen).
+        # Rather than guessing which one it is the instant it fires, this
+        # tracks one "pause episode" at a time and resolves it once the
+        # outcome is known — either lives actually decreased during it (a
+        # real death) or the pause ended without that happening (Mario
+        # survived, just lost his power-up and is briefly invincible now).
+        pause_active = False
+        pause_captured = False
+        pause_life_lost = False
 
         print(f"Loaded genome fitness (from training): {winner.fitness}")
         raw_d = getattr(winner, "raw_distance", None)
@@ -333,28 +343,43 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
             video_frames.append(np.asarray(obs, dtype=np.uint8))
 
             player_state = int(ram[ADDR_OBJECT_PAUSE])
-            if player_state == 0:
-                state_change_reported = False
-            elif not state_change_reported:
-                # The instant Object Pause is set (nonzero) — per the docs this
-                # happens right when the death sequence begins, freezing
-                # everything except Mario's death-jump animation. The
-                # collision, if any, is at or right before the last frame
-                # shown here, not in this frame or after.
-                state_change_reported = True
-                context = [e for e in history if e[0] < step][-CONTEXT_STEPS_TO_SHOW:]
-                print(
-                    f"\n[step {step}] Object Pause flag set (0x0747 = {player_state}) — "
-                    f"death sequence likely starting now. Steps leading up to this moment:"
-                )
-                if context:
-                    print_death_trace(context)
-                else:
-                    print("  (not enough history before this point to show)")
-                video_path = save_death_video(list(video_frames), step, os.getcwd())
-                if video_path:
+            if player_state != 0:
+                if not pause_active:
+                    pause_active = True
+                    pause_captured = False
+                    pause_life_lost = False
+                if not pause_captured:
+                    # The instant Object Pause is set — the collision, if any,
+                    # is at or right before the last frame shown here, not in
+                    # this frame or after. Captured once per pause episode;
+                    # whether it turns out to be a death or a survived hit is
+                    # resolved below, once the outcome is actually known.
+                    pause_captured = True
+                    context = [e for e in history if e[0] < step][
+                        -CONTEXT_STEPS_TO_SHOW:
+                    ]
                     print(
-                        f"  Clip of the {len(video_frames)} frames before this death: {video_path}"
+                        f"\n[step {step}] Object Pause flag set (0x0747 = {player_state}) — "
+                        f"Mario's state just changed (a collision, most likely). Could be a "
+                        f"death, or — if he was Big/Fire — just a power-down hit; resolving "
+                        f"once the animation ends. Steps leading up to this moment:"
+                    )
+                    if context:
+                        print_death_trace(context)
+                    else:
+                        print("  (not enough history before this point to show)")
+                    video_path = save_death_video(list(video_frames), step, os.getcwd())
+                    if video_path:
+                        print(
+                            f"  Clip of the {len(video_frames)} frames before this moment: {video_path}"
+                        )
+            elif pause_active:
+                pause_active = False
+                if not pause_life_lost:
+                    print(
+                        f"[step {step}] Resolved: no life was lost during that pause — a "
+                        f"power-down hit (Big/Fire -> Small), not a death. Mario is briefly "
+                        f"invincible now."
                     )
 
             obs, reward, terminated, truncated, info = env.step(action)
@@ -370,11 +395,36 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
 
             lives = info.get("lives")
             if lives is not None and prev_lives is not None and lives < prev_lives:
-                print(
-                    f"[step {step}] Mario lost a life (registered by the game here; "
-                    f"the actual collision was reported above, near the start of the fall). "
-                    f"Position reached: {world_x} (max so far: {max_world_x})"
-                )
+                if pause_active:
+                    pause_life_lost = True
+                    print(
+                        f"[step {step}] Resolved: this WAS a real death (registered here; the "
+                        f"collision was reported above). Position reached: {world_x} "
+                        f"(max so far: {max_world_x})"
+                    )
+                else:
+                    # Object Pause never fired at all for this one — falling
+                    # into a pit doesn't seem to set it the way an enemy
+                    # collision does, so without this fallback the death
+                    # (and its trace/video) would go completely uncaptured.
+                    context = [e for e in history if e[0] < step][
+                        -CONTEXT_STEPS_TO_SHOW:
+                    ]
+                    print(
+                        f"\n[step {step}] Mario lost a life (Object Pause never fired for this "
+                        f"one — likely fell into a pit rather than colliding with an enemy). "
+                        f"Position reached: {world_x} (max so far: {max_world_x}). "
+                        f"Steps leading up to this moment:"
+                    )
+                    if context:
+                        print_death_trace(context)
+                    else:
+                        print("  (not enough history before this point to show)")
+                    video_path = save_death_video(list(video_frames), step, os.getcwd())
+                    if video_path:
+                        print(
+                            f"  Clip of the {len(video_frames)} frames before this death: {video_path}"
+                        )
             prev_lives = lives
 
             env.render()
