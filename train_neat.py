@@ -930,7 +930,7 @@ def format_duration(start: datetime | None, end: datetime | None) -> str:
     return f"{s}s"
 
 
-def format_run_line(r: dict, arrow: str) -> str:
+def format_run_line(r: dict) -> str:
     fitness_str = f"{r['best_fitness']:.0f}" if r["best_fitness"] is not None else "n/a"
     start_str = (
         r["start_time"].strftime("%Y-%m-%d %H:%M %Z") if r["start_time"] else "n/a"
@@ -941,10 +941,31 @@ def format_run_line(r: dict, arrow: str) -> str:
     duration_str = format_duration(r["start_time"], r["end_time"])
     parent_str = r["parent_run_id"] or "-"
     return (
-        f"{arrow} {r['run_id']:<20} parent={parent_str:<20} "
+        f"{r['run_id']:<20} parent={parent_str:<20} "
         f"start={start_str:<20} end={end_str:<20} "
         f"dur={duration_str:<8} fitness={fitness_str}"
     )
+
+
+def _init_curses_colors(stdscr):
+    """Sets up curses to use the terminal's own default colors instead of
+    imposing black/white (so the picker blends into whatever theme the
+    person's shell already has), and returns (green_attr, red_attr) color
+    pairs for the ▲/▼ arrows. Falls back to plain (0) attrs — no color, but
+    still functional — if the terminal doesn't support color at all."""
+    import curses
+
+    green = red = 0
+    try:
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_RED, -1)
+        green = curses.color_pair(1)
+        red = curses.color_pair(2)
+    except curses.error:
+        pass
+    return green, red
 
 
 def pick_run_interactively(
@@ -961,6 +982,7 @@ def pick_run_interactively(
 
     def _inner(stdscr):
         curses.curs_set(0)
+        green, red = _init_curses_colors(stdscr)
         stdscr.nodelay(True)
         current = default_index
         fresh_idx = len(runs)
@@ -983,21 +1005,42 @@ def pick_run_interactively(
                     f"Auto-selecting the default in {remaining:4.1f}s if no input...",
                 )
             for i, r in enumerate(runs):
-                marker = "> " if i == current else "  "
-                attr = curses.A_REVERSE if i == current else curses.A_NORMAL
-                tag = " (default)" if i == default_index else ""
-                line = (
-                    f"{marker}{format_run_line(r, arrows.get(r['run_id'], ' '))}{tag}"
+                selected = i == current
+                marker = "> " if selected else "  "
+                # Bold+underline to highlight the selected row, instead of a
+                # reverse-video block — that would invert the arrow's own
+                # green/red away from anything reliably legible. This way the
+                # arrow keeps its actual color on every row, selected or not.
+                base_attr = (
+                    (curses.A_BOLD | curses.A_UNDERLINE)
+                    if selected
+                    else curses.A_NORMAL
                 )
+                arrow = arrows.get(r["run_id"], " ")
+                arrow_attr = base_attr | (
+                    green if arrow == "▲" else red if arrow == "▼" else 0
+                )
+                tag = " (default)" if i == default_index else ""
+                y = 3 + i
                 try:
-                    stdscr.addstr(3 + i, 0, line, attr)
+                    stdscr.addstr(y, 0, marker, base_attr)
+                    stdscr.addstr(y, len(marker), arrow, arrow_attr)
+                    stdscr.addstr(
+                        y,
+                        len(marker) + len(arrow),
+                        f" {format_run_line(r)}{tag}",
+                        base_attr,
+                    )
                 except curses.error:
                     pass
-            marker = "> " if current == fresh_idx else "  "
-            attr = curses.A_REVERSE if current == fresh_idx else curses.A_NORMAL
+            selected = current == fresh_idx
+            marker = "> " if selected else "  "
+            base_attr = (
+                (curses.A_BOLD | curses.A_UNDERLINE) if selected else curses.A_NORMAL
+            )
             try:
                 stdscr.addstr(
-                    3 + fresh_idx + 1, 0, f"{marker}{last_option_label}", attr
+                    3 + fresh_idx + 1, 0, f"{marker}{last_option_label}", base_attr
                 )
             except curses.error:
                 pass
@@ -1048,6 +1091,7 @@ def pick_state_interactively(states: list, default_state: str) -> str:
 
     def _inner(stdscr):
         curses.curs_set(0)
+        _init_curses_colors(stdscr)
         stdscr.nodelay(True)
         current = default_index
         deadline = time.time() + PROMPT_TIMEOUT_SECONDS
@@ -1069,8 +1113,13 @@ def pick_state_interactively(states: list, default_state: str) -> str:
                     f"Auto-selecting the default in {remaining:4.1f}s if no input...",
                 )
             for i, s in enumerate(states):
-                marker = "> " if i == current else "  "
-                attr = curses.A_REVERSE if i == current else curses.A_NORMAL
+                selected = i == current
+                marker = "> " if selected else "  "
+                attr = (
+                    (curses.A_BOLD | curses.A_UNDERLINE)
+                    if selected
+                    else curses.A_NORMAL
+                )
                 tag = " (default)" if i == default_index else ""
                 try:
                     stdscr.addstr(3 + i, 0, f"{marker}{s}{tag}", attr)
