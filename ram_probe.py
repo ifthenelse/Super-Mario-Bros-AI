@@ -15,16 +15,18 @@ import numpy as np
 
 import stable_retro
 
+from train_neat import set_render_scale
+
 # Candidate addresses (to be validated)
-ADDR_X_PAGE = 0x006D       # Mario's horizontal page/screen
-ADDR_X_SCREEN = 0x0086     # Mario's X position on the current screen
-ADDR_Y_POS = 0x00CE        # Mario's Y position
+ADDR_X_PAGE = 0x006D  # Mario's horizontal page/screen
+ADDR_X_SCREEN = 0x0086  # Mario's X position on the current screen
+ADDR_Y_POS = 0x00CE  # Mario's Y position
 ADDR_PLAYER_STATE = 0x000E  # Mario's state (e.g. 0x06/0x0B = dying)
 
 N_ENEMY_SLOTS = 5
-ADDR_ENEMY_DRAWN = 0x000F      # 5 bytes: 1 if the enemy in that slot is active
-ADDR_ENEMY_X_SCREEN = 0x0087   # 5 bytes: enemy X position on screen
-ADDR_ENEMY_Y_POS = 0x00CF      # 5 bytes: enemy Y position
+ADDR_ENEMY_DRAWN = 0x000F  # 5 bytes: 1 if the enemy in that slot is active
+ADDR_ENEMY_X_SCREEN = 0x0087  # 5 bytes: enemy X position on screen
+ADDR_ENEMY_Y_POS = 0x00CF  # 5 bytes: enemy Y position
 
 
 def read_ram_values(ram: np.ndarray) -> dict:
@@ -53,6 +55,7 @@ def read_ram_values(ram: np.ndarray) -> dict:
 def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
     obs, info = env.reset()
+    set_render_scale(env)
 
     print("RAM address validation. Check whether the values make sense:")
     print("- mario_x_screen should change when Mario moves")
@@ -73,14 +76,16 @@ def main():
         values = read_ram_values(ram)
 
         if step % print_every == 0:
-            print(f"[step {step:4d}] "
-                  f"x_page={values['mario_x_page']:>3} "
-                  f"x_screen={values['mario_x_screen']:>3} "
-                  f"y={values['mario_y']:>3} "
-                  f"state={values['player_state']:>3} "
-                  f"active_enemies={len(values['enemies'])} "
-                  f"| info_xscrollLo={info.get('xscrollLo')} "
-                  f"lives={info.get('lives')}")
+            print(
+                f"[step {step:4d}] "
+                f"x_page={values['mario_x_page']:>3} "
+                f"x_screen={values['mario_x_screen']:>3} "
+                f"y={values['mario_y']:>3} "
+                f"state={values['player_state']:>3} "
+                f"active_enemies={len(values['enemies'])} "
+                f"| info_xscrollLo={info.get('xscrollLo')} "
+                f"lives={info.get('lives')}"
+            )
 
         env.render()
 

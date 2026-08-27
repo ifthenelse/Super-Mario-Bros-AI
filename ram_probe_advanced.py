@@ -21,6 +21,8 @@ import pyglet
 
 import stable_retro
 
+from train_neat import set_render_scale
+
 ADDR_X_SCREEN = 0x0086
 ADDR_X_PAGE = 0x006D
 ADDR_Y_POS = 0x00CE
@@ -30,7 +32,9 @@ ADDR_Y_SPEED = 0x009F  # candidate: vertical speed
 
 N_ENEMY_SLOTS = 5
 ADDR_ENEMY_DRAWN = 0x000F
-ADDR_ENEMY_TYPE = 0x0016   # candidate: enemy type per slot (0=Goomba, 1=green Koopa, ...)
+ADDR_ENEMY_TYPE = (
+    0x0016  # candidate: enemy type per slot (0=Goomba, 1=green Koopa, ...)
+)
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
@@ -39,7 +43,9 @@ TILE_ROWS = 13
 TILE_COLS_PER_PAGE = 16
 
 
-def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int) -> int:
+def get_tile(
+    ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
+) -> int:
     """Returns 1 if the tile at (mario_world_x+dx, mario_y+dy) is solid, 0 otherwise."""
     x = mario_world_x + dx
     y = mario_y + dy - 16  # empirical vertical offset used in reference scripts
@@ -51,7 +57,12 @@ def get_tile(ram: np.ndarray, mario_world_x: int, mario_y: int, dx: int, dy: int
     if row < 0 or row >= TILE_ROWS:
         return 0
 
-    addr = TILE_BUFFER_BASE + page * TILE_ROWS * TILE_COLS_PER_PAGE + row * TILE_COLS_PER_PAGE + col
+    addr = (
+        TILE_BUFFER_BASE
+        + page * TILE_ROWS * TILE_COLS_PER_PAGE
+        + row * TILE_COLS_PER_PAGE
+        + col
+    )
     if addr < 0 or addr >= len(ram):
         return 0
 
@@ -78,12 +89,17 @@ def print_tile_grid(ram: np.ndarray, mario_world_x: int, mario_y: int):
 def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
     obs, info = env.reset()
+    set_render_scale(env)
     env.render()  # forces the pyglet window to be created, so we can hook key events
 
     speed_state = {"multiplier": 1.0, "paused": False}
 
     def on_key_press(symbol, modifiers):
-        if symbol in (pyglet.window.key.PLUS, pyglet.window.key.EQUAL, pyglet.window.key.NUM_ADD):
+        if symbol in (
+            pyglet.window.key.PLUS,
+            pyglet.window.key.EQUAL,
+            pyglet.window.key.NUM_ADD,
+        ):
             speed_state["multiplier"] = min(speed_state["multiplier"] * 1.5, 16.0)
             print(f"Speed: {speed_state['multiplier']:.2f}x")
         elif symbol in (pyglet.window.key.MINUS, pyglet.window.key.NUM_SUBTRACT):
@@ -99,7 +115,9 @@ def main():
     env.viewer.window.push_handlers(on_key_press=on_key_press)
 
     print("Tile grid and speed validation.")
-    print("Game window controls: '+' speeds up, '-' slows down, '0' resets to 1x, SPACE pauses/resumes.")
+    print(
+        "Game window controls: '+' speeds up, '-' slows down, '0' resets to 1x, SPACE pauses/resumes."
+    )
     print("Press Ctrl+C in the terminal to stop once you've seen enough.\n")
 
     frame_time = 1.0 / 60.0
@@ -135,8 +153,10 @@ def main():
             y_speed_raw = int(np.int8(ram[ADDR_Y_SPEED]))
 
             if step % print_every == 0:
-                print(f"[step {step:4d}] world_x={mario_world_x} y={mario_y} "
-                      f"x_speed={x_speed_raw} y_speed={y_speed_raw}")
+                print(
+                    f"[step {step:4d}] world_x={mario_world_x} y={mario_y} "
+                    f"x_speed={x_speed_raw} y_speed={y_speed_raw}"
+                )
 
                 enemy_info = []
                 for i in range(N_ENEMY_SLOTS):

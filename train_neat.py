@@ -500,6 +500,24 @@ def debug_snapshot(ram: np.ndarray) -> dict:
     }
 
 
+NES_NATIVE_WIDTH = 256  # the console's actual horizontal resolution
+RENDER_SCALE = 4  # how large the emulator window opens, as a multiple of that
+
+
+def set_render_scale(env, scale: int = RENDER_SCALE):
+    """Pre-creates the emulator's display window at a fixed multiple of the
+    NES's native resolution (default 4x), instead of stable-retro's built-in
+    default (~1.95x — it scales to fit a fixed 500px-wide viewer regardless
+    of the console's actual resolution). Must be called once, before the
+    first env.render(): RetroEnv only creates its viewer lazily the first
+    time, and leaves it alone from then on — setting it ourselves first means
+    that's the one actually used, instead of the library's own default."""
+    from stable_retro.rendering import SimpleImageViewer
+
+    target = getattr(env, "unwrapped", env)
+    target.viewer = SimpleImageViewer(maxwidth=NES_NATIVE_WIDTH * scale)
+
+
 def outputs_to_action(outputs) -> np.ndarray:
     """Converts the network's (continuous) outputs into a 0/1 button array."""
     return np.array([1 if o > 0.5 else 0 for o in outputs], dtype=np.int8)

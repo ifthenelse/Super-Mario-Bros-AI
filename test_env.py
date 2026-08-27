@@ -8,11 +8,14 @@ import time
 
 import stable_retro
 
+from train_neat import set_render_scale
+
 
 def main():
     env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
 
     obs, info = env.reset()
+    set_render_scale(env)
     print("Environment created successfully.")
     print("Observation (frame) shape:", obs.shape)
     print("Action space:", env.action_space)

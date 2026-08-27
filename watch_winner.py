@@ -55,6 +55,7 @@ from train_neat import (
     load_state_offset,
     outputs_to_action,
     pick_run_interactively,
+    set_render_scale,
     summarize_run,
 )
 
@@ -250,6 +251,7 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
         )
         obs, info = env.reset()
         ram = env.get_ram()
+        set_render_scale(env)
         env.render()  # forces the pyglet window to be created, so we can hook key events
 
         speed_state = {"multiplier": 1.0, "paused": False}

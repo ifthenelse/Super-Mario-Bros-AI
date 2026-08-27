@@ -32,6 +32,14 @@ Controls (game window must have focus):
                  stable-retro state (see CUSTOM_SAVE_STATE_NAME below) —
                  useful for training on a specific stretch of the game that
                  has no bundled state of its own (e.g. the start of 1-2)
+  Y            - toggle Piranha Plant Y-tracking mode: prints every active
+                 Piranha Plant's RAW (absolute, not relative to Mario) Y
+                 position every single frame, so you can read off its
+                 up/down cycle cleanly — stand still near a pipe with one
+                 visible and watch the printed values rise and fall; this is
+                 NOT the same as the "dy" shown elsewhere (that's relative to
+                 Mario, so it's contaminated by Mario's own vertical
+                 movement whenever he jumps)
   +/-          - speed up / slow down emulation
   0            - reset speed to 1x
   SPACE        - pause / resume
@@ -39,6 +47,7 @@ Controls (game window must have focus):
 """
 
 import gzip
+import json
 import os
 import time
 
@@ -47,7 +56,18 @@ import pyglet
 
 import stable_retro
 
-from train_neat import ADDR_X_PAGE, ADDR_X_SCREEN, ADDR_Y_POS, get_tile
+from train_neat import (
+    ADDR_ENEMY_DRAWN,
+    ADDR_ENEMY_TYPE,
+    ADDR_ENEMY_Y_POS,
+    ADDR_X_PAGE,
+    ADDR_X_SCREEN,
+    ADDR_Y_POS,
+    N_ENEMY_SLOTS,
+    PIRANHA_PLANT_TYPE,
+    get_tile,
+    set_render_scale,
+)
 
 ADDR_AREA_TYPE = 0x0764  # candidate, found unreliable: 0x0764 never changed across real level transitions
 ADDR_ENGINE_STATE = 0x0770  # candidate: internal game engine state/subroutine (also cited as "Gameplay Mode")
@@ -76,11 +96,16 @@ QUICK_LOAD_STATES = {
 }
 
 
-def save_state(env, name: str) -> str:
+def save_state(env, name: str, level_offset: int) -> tuple:
     """Saves the emulator's current state as a reusable stable-retro state
     file, in the same folder as the integration's own bundled states (found
     via stable-retro's own lookup, not guessed), so `--state <name>` later
-    finds it the same way it finds the built-in ones.
+    finds it the same way it finds the built-in ones. Also writes a small
+    sidecar JSON file recording level_offset — the distance already covered
+    in levels completed *before* this point — so train_neat.py can add it
+    back to every episode's fitness/raw_distance, keeping runs that start
+    mid-game comparable to ones that start from the very beginning instead
+    of always looking artificially worse.
 
     Raises RuntimeError with a specific, diagnostic message at whichever step
     fails, instead of a bare/opaque exception — this API was verified against
@@ -102,6 +127,7 @@ def save_state(env, name: str) -> str:
         )
     target_dir = os.path.dirname(reference_path)
     target_path = os.path.join(target_dir, f"{name}.state")
+    offset_path = os.path.join(target_dir, f"{name}.offset.json")
 
     emulator = getattr(env, "unwrapped", env)
     emulator = getattr(emulator, "em", None)
@@ -134,7 +160,15 @@ def save_state(env, name: str) -> str:
             f"Write appeared to succeed but {target_path} is missing or empty."
         )
 
-    return target_path
+    try:
+        with open(offset_path, "w") as f:
+            json.dump({"level_offset": level_offset}, f, indent=2)
+    except OSError as e:
+        raise RuntimeError(
+            f"Saved the state itself, but could not write the offset sidecar {offset_path}: {e}"
+        )
+
+    return target_path, offset_path
 
 
 def print_tile_grid(ram, mario_world_x, mario_y):
@@ -158,6 +192,7 @@ def make_env(state=None):
     if state:
         kwargs["state"] = state
     env = stable_retro.make("SuperMarioBros-Nes-v0", **kwargs)
+    set_render_scale(env)
     return env
 
 
@@ -170,6 +205,7 @@ def main():
         "load_request": None,
         "print_now": False,
         "save_request": False,
+        "track_piranha": False,
     }
     shared["env"].reset()
     shared["env"].render()
@@ -207,6 +243,11 @@ def main():
                 shared["print_now"] = True
             elif symbol == pyglet.window.key.S:
                 shared["save_request"] = True
+            elif symbol == pyglet.window.key.Y:
+                shared["track_piranha"] = not shared["track_piranha"]
+                print(
+                    f"\nPiranha Plant Y-tracking: {'ON' if shared['track_piranha'] else 'OFF'}\n"
+                )
             elif symbol in QUICK_LOAD_STATES:
                 shared["load_request"] = QUICK_LOAD_STATES[symbol]
 
@@ -251,6 +292,13 @@ def main():
     prev_object_pause = None
     prev_world_level = None
     transition_dump_remaining = 0
+    # Tracks distance already covered in levels completed *within this
+    # session* (mirrors eval_genomes()'s level_offset accumulation in
+    # train_neat.py) — only accurate for a level actually walked through
+    # here, not one jumped into directly via a quick-load or a state that
+    # itself starts mid-game.
+    level_offset = 0
+    prev_raw_world_x = 0
     while True:
         step_start = time.time()
         env = shared["env"]
@@ -267,15 +315,25 @@ def main():
             shared["env"] = new_env
             shared["action"][:] = 0
             step = 0
+            level_offset = 0
+            prev_raw_world_x = 0
+            prev_world_level = None
+            print(
+                ">>> level_offset reset to 0 for this new state — only distance covered "
+                "from here on (in this session) will be tracked."
+            )
             continue
 
         if shared["save_request"]:
             shared["save_request"] = False
             try:
-                saved_path = save_state(env, CUSTOM_SAVE_STATE_NAME)
+                saved_path, offset_path = save_state(
+                    env, CUSTOM_SAVE_STATE_NAME, level_offset
+                )
                 print(
                     f"\n>>> Saved current state to: {saved_path} ({os.path.getsize(saved_path)} bytes)"
                 )
+                print(f">>> Saved level_offset={level_offset} to: {offset_path}")
                 print(
                     f">>> Use it with: python train_neat.py --state {CUSTOM_SAVE_STATE_NAME}\n"
                 )
@@ -303,13 +361,27 @@ def main():
         world_x_from_page = mario_x_page * 256 + mario_x_screen
         world_x_from_scroll = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
 
+        if shared["track_piranha"]:
+            for i in range(N_ENEMY_SLOTS):
+                drawn = int(ram[ADDR_ENEMY_DRAWN + i])
+                enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
+                if drawn and enemy_type == PIRANHA_PLANT_TYPE:
+                    raw_y = int(ram[ADDR_ENEMY_Y_POS + i])
+                    print(
+                        f"  [step {step:5d}] slot={i} PIRANHA raw_y={raw_y:3d}  "
+                        f"(mario_y={mario_y:3d}, for reference — this raw_y is NOT relative to it)"
+                    )
+
         if prev_world_level is not None and world_level != prev_world_level:
+            level_offset += prev_raw_world_x
             print(
                 f"\n>>> [step {step:5d}] LEVEL CHANGED: {prev_world_level} -> {world_level}. "
+                f"level_offset is now {level_offset}. "
                 f"Dumping the next {TRANSITION_DUMP_FRAMES} frames in detail:"
             )
             transition_dump_remaining = TRANSITION_DUMP_FRAMES
         prev_world_level = world_level
+        prev_raw_world_x = world_x_from_scroll
 
         if transition_dump_remaining > 0:
             transition_dump_remaining -= 1
