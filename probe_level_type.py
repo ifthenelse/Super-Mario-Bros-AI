@@ -49,11 +49,11 @@ import stable_retro
 
 from train_neat import ADDR_X_PAGE, ADDR_X_SCREEN, ADDR_Y_POS, get_tile
 
-ADDR_AREA_TYPE = 0x0764     # candidate, found unreliable: 0x0764 never changed across real level transitions
+ADDR_AREA_TYPE = 0x0764  # candidate, found unreliable: 0x0764 never changed across real level transitions
 ADDR_ENGINE_STATE = 0x0770  # candidate: internal game engine state/subroutine (also cited as "Gameplay Mode")
 ADDR_OBJECT_PAUSE = 0x0747  # candidate: "Object Pause" — freezes all action except Mario, used upon dying
-ADDR_LEVEL_HI = 1887        # validated (from data.json): world index
-ADDR_LEVEL_LO = 1884        # validated (from data.json): level-within-world index
+ADDR_LEVEL_HI = 1887  # validated (from data.json): world index
+ADDR_LEVEL_LO = 1884  # validated (from data.json): level-within-world index
 
 # Name used when saving a custom savestate with 'S' (see save_state below).
 # stable-retro's SuperMarioBros-Nes-v0 integration only ships states for the
@@ -80,15 +80,60 @@ def save_state(env, name: str) -> str:
     """Saves the emulator's current state as a reusable stable-retro state
     file, in the same folder as the integration's own bundled states (found
     via stable-retro's own lookup, not guessed), so `--state <name>` later
-    finds it the same way it finds the built-in ones."""
+    finds it the same way it finds the built-in ones.
+
+    Raises RuntimeError with a specific, diagnostic message at whichever step
+    fails, instead of a bare/opaque exception — this API was verified against
+    a freshly downloaded stable-retro wheel, not against whatever version is
+    actually installed here, so something not matching is a real possibility."""
     # Any bundled state works as a reference point to find the right folder —
     # Level1-1.state always exists for this integration.
-    reference_path = stable_retro.data.get_file_path("SuperMarioBros-Nes-v0", "Level1-1.state")
+    reference_path = stable_retro.data.get_file_path(
+        "SuperMarioBros-Nes-v0", "Level1-1.state"
+    )
+    if reference_path is None:
+        raise RuntimeError(
+            "stable_retro.data.get_file_path('SuperMarioBros-Nes-v0', 'Level1-1.state') "
+            "returned None — couldn't locate the integration's data folder at all."
+        )
+    if not os.path.isdir(os.path.dirname(reference_path)):
+        raise RuntimeError(
+            f"Resolved a target folder that doesn't exist: {os.path.dirname(reference_path)}"
+        )
     target_dir = os.path.dirname(reference_path)
     target_path = os.path.join(target_dir, f"{name}.state")
-    raw_state = env.unwrapped.em.get_state()
-    with gzip.open(target_path, "wb") as f:
-        f.write(raw_state)
+
+    emulator = getattr(env, "unwrapped", env)
+    emulator = getattr(emulator, "em", None)
+    if emulator is None:
+        raise RuntimeError(
+            f"env.unwrapped has no 'em' attribute (type: {type(getattr(env, 'unwrapped', env))}). "
+            f"Available attributes: {[a for a in dir(getattr(env, 'unwrapped', env)) if not a.startswith('_')]}"
+        )
+    if not hasattr(emulator, "get_state"):
+        raise RuntimeError(
+            f"The emulator object (type: {type(emulator)}) has no get_state() method in this "
+            f"stable-retro version. Available methods: "
+            f"{[m for m in dir(emulator) if not m.startswith('_')]}"
+        )
+
+    raw_state = emulator.get_state()
+    if not raw_state:
+        raise RuntimeError(
+            f"emulator.get_state() returned empty/falsy data: {raw_state!r}"
+        )
+
+    try:
+        with gzip.open(target_path, "wb") as f:
+            f.write(raw_state)
+    except OSError as e:
+        raise RuntimeError(f"Could not write to {target_path}: {e}")
+
+    if not os.path.exists(target_path) or os.path.getsize(target_path) == 0:
+        raise RuntimeError(
+            f"Write appeared to succeed but {target_path} is missing or empty."
+        )
+
     return target_path
 
 
@@ -100,7 +145,11 @@ def print_tile_grid(ram, mario_world_x, mario_y):
             if row_offset == 0 and col_offset == 0:
                 line += "M"
             else:
-                line += "X" if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset) else "."
+                line += (
+                    "X"
+                    if get_tile(ram, mario_world_x, mario_y, col_offset, row_offset)
+                    else "."
+                )
         print(f"    {line}")
 
 
@@ -178,14 +227,22 @@ def main():
             elif symbol == pyglet.window.key.ENTER:
                 a[3] = 0
 
-        env.viewer.window.push_handlers(on_key_press=on_key_press, on_key_release=on_key_release)
+        env.viewer.window.push_handlers(
+            on_key_press=on_key_press, on_key_release=on_key_release
+        )
 
     attach_handlers(shared["env"])
 
-    print("Manual probe started. See the docstring at the top of this file for controls.")
-    print("Press 1/2/3 to quick-load Level1-1 / Level1-4 / Level2-1. Press P to print values on demand.")
-    print(f"Press S to save the current position as a reusable state (default name: "
-          f"'{CUSTOM_SAVE_STATE_NAME}').\n")
+    print(
+        "Manual probe started. See the docstring at the top of this file for controls."
+    )
+    print(
+        "Press 1/2/3 to quick-load Level1-1 / Level1-4 / Level2-1. Press P to print values on demand."
+    )
+    print(
+        f"Press S to save the current position as a reusable state (default name: "
+        f"'{CUSTOM_SAVE_STATE_NAME}').\n"
+    )
 
     frame_time = 1.0 / 60.0
     print_every = 60  # once per second at normal speed
@@ -214,9 +271,16 @@ def main():
 
         if shared["save_request"]:
             shared["save_request"] = False
-            saved_path = save_state(env, CUSTOM_SAVE_STATE_NAME)
-            print(f"\n>>> Saved current state to: {saved_path}")
-            print(f">>> Use it with: python train_neat.py --state {CUSTOM_SAVE_STATE_NAME}\n")
+            try:
+                saved_path = save_state(env, CUSTOM_SAVE_STATE_NAME)
+                print(
+                    f"\n>>> Saved current state to: {saved_path} ({os.path.getsize(saved_path)} bytes)"
+                )
+                print(
+                    f">>> Use it with: python train_neat.py --state {CUSTOM_SAVE_STATE_NAME}\n"
+                )
+            except Exception as e:
+                print(f"\n>>> Failed to save state: {e}\n")
 
         if shared["paused"]:
             env.render()
@@ -240,28 +304,36 @@ def main():
         world_x_from_scroll = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
 
         if prev_world_level is not None and world_level != prev_world_level:
-            print(f"\n>>> [step {step:5d}] LEVEL CHANGED: {prev_world_level} -> {world_level}. "
-                  f"Dumping the next {TRANSITION_DUMP_FRAMES} frames in detail:")
+            print(
+                f"\n>>> [step {step:5d}] LEVEL CHANGED: {prev_world_level} -> {world_level}. "
+                f"Dumping the next {TRANSITION_DUMP_FRAMES} frames in detail:"
+            )
             transition_dump_remaining = TRANSITION_DUMP_FRAMES
         prev_world_level = world_level
 
         if transition_dump_remaining > 0:
             transition_dump_remaining -= 1
-            print(f"  [step {step:5d}] page-based world_x={world_x_from_page:5d} "
-                  f"(page={mario_x_page} screen={mario_x_screen})  "
-                  f"scroll-based world_x={world_x_from_scroll:5d} "
-                  f"(xscrollHi={info.get('xscrollHi')} xscrollLo={info.get('xscrollLo')})  "
-                  f"mario_y={mario_y}")
+            print(
+                f"  [step {step:5d}] page-based world_x={world_x_from_page:5d} "
+                f"(page={mario_x_page} screen={mario_x_screen})  "
+                f"scroll-based world_x={world_x_from_scroll:5d} "
+                f"(xscrollHi={info.get('xscrollHi')} xscrollLo={info.get('xscrollLo')})  "
+                f"mario_y={mario_y}"
+            )
             print_tile_grid(ram, world_x_from_page, mario_y)
 
         if step % print_every == 0 or shared["print_now"]:
             shared["print_now"] = False
-            print(f"[step {step:5d}] world-level={world}-{level}  area_type={area_type}  "
-                  f"engine_state={engine_state}  object_pause={object_pause}  lives={info.get('lives')}")
+            print(
+                f"[step {step:5d}] world-level={world}-{level}  area_type={area_type}  "
+                f"engine_state={engine_state}  object_pause={object_pause}  lives={info.get('lives')}"
+            )
 
         if object_pause != prev_object_pause:
-            print(f"  >>> [step {step:5d}] object_pause CHANGED: {prev_object_pause} -> {object_pause} "
-                  f"(world-level={world}-{level}, lives={info.get('lives')})")
+            print(
+                f"  >>> [step {step:5d}] object_pause CHANGED: {prev_object_pause} -> {object_pause} "
+                f"(world-level={world}-{level}, lives={info.get('lives')})"
+            )
         prev_object_pause = object_pause
 
         env.render()
