@@ -121,6 +121,11 @@ ADDR_ENEMY_TYPE = 0x0016  # validated: enemy type per slot (e.g. 6 = Koopa Troop
 ADDR_ENEMY_X_SCREEN = 0x0087
 ADDR_ENEMY_Y_POS = 0x00CF
 
+# Candidate, NOT rigorously validated (inferred from watching death clips
+# showing this type value specifically next to pipes with a Piranha Plant
+# visible) — not confirmed via a dedicated probe the way e.g. type 6 was.
+PIRANHA_PLANT_TYPE = 13
+
 ADDR_POWER_STATE = (
     0x0756  # candidate, NOT yet validated on this ROM: 0=small, 1=big, 2=fire
 )
@@ -478,10 +483,10 @@ def outputs_to_action(outputs) -> np.ndarray:
 
 
 def find_most_urgent_enemy(ram: np.ndarray):
-    """Returns (dx, clearance) for whichever active enemy has the soonest
-    time-to-impact, or None if no enemies are active. Kept independent from
-    build_observation() so its output shape/signature stays stable for other
-    callers (e.g. watch_winner.py) — this is purely for reward shaping."""
+    """Returns (dx, clearance, enemy_type) for whichever active enemy has the
+    soonest time-to-impact, or None if no enemies are active. Kept independent
+    from build_observation() so its output shape/signature stays stable for
+    other callers (e.g. watch_winner.py) — this is purely for reward shaping."""
     mario_x_screen = int(ram[ADDR_X_SCREEN])
     mario_x_page = int(ram[ADDR_X_PAGE])
     mario_world_x = mario_x_page * 256 + mario_x_screen
@@ -494,6 +499,7 @@ def find_most_urgent_enemy(ram: np.ndarray):
         if int(ram[ADDR_ENEMY_DRAWN + i]):
             enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
             enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
+            enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
             dx = enemy_x - mario_x_screen
             dy = enemy_y - mario_y
             enemy_world_x = mario_world_x + dx
@@ -501,7 +507,7 @@ def find_most_urgent_enemy(ram: np.ndarray):
             time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
             if best_abs_time is None or abs(time_to_enemy) < best_abs_time:
                 best_abs_time = abs(time_to_enemy)
-                best = (dx, clearance)
+                best = (dx, clearance, enemy_type)
     return best
 
 
@@ -556,17 +562,27 @@ def eval_genomes(genomes, config, env, render=False):
             mario_world_x_now = mario_x_page * 256 + mario_x_screen
             mario_y_now = int(ram[ADDR_Y_POS])
             if urgent is not None:
-                dx, clearance = urgent
+                dx, clearance, enemy_type = urgent
                 if clearance == 0.0 and abs(dx) < CAUTION_DANGER_DX:
                     # No safe way to jump over this enemy and it's very close:
                     # reward holding still or backing off, instead of freezing
                     # uselessly or pushing forward into it.
                     if x_speed_now_early <= 0:
                         caution_bonus += CAUTION_BONUS_PER_FRAME
-                elif clearance > 0.0 and abs(dx) < ADVANCE_DANGER_DX:
+                elif (
+                    clearance > 0.0
+                    and abs(dx) < ADVANCE_DANGER_DX
+                    and enemy_type != PIRANHA_PLANT_TYPE
+                ):
                     # The opposite case: this enemy is nearby but genuinely
                     # jumpable and not right on top of Mario — freezing here
                     # is the mistake, not the safe choice. Reward moving.
+                    # Excludes Piranha Plants: their pop-up/retract cycle isn't
+                    # captured by our (static-tile-based) clearance check, so
+                    # "geometrically jumpable" doesn't mean "safe to jump at
+                    # this exact instant" — encouraging a full-speed committed
+                    # jump at them specifically was observed causing exactly
+                    # the kind of collision this bonus was meant to prevent.
                     if x_speed_now_early > 0:
                         advance_bonus += ADVANCE_BONUS_PER_FRAME
             elif x_speed_now_early > 0:
