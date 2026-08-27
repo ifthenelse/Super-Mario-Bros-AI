@@ -1,0 +1,17 @@
+{
+  "run_id": "run-20260827-170957",
+  "parent_run_id": "run-20260827-161344",
+  "start_time": "2026-08-27T17:09:57.182427+02:00",
+  "end_time": "2026-08-27T18:10:01.106860+02:00",
+  "best_fitness": 7610.599999999999,
+  "best_raw_distance": 7558.0,
+  "best_caution_bonus": 0.0,
+  "best_anti_idle_bonus": 1.5,
+  "best_jump_when_blocked_bonus": 5.399999999999999,
+  "best_narrow_gap_bonus": 3.2999999999999994,
+  "best_running_bonus": 15,
+  "best_advance_bonus": 15,
+  "best_clear_path_bonus": 0.0,
+  "best_down_hold_bonus": 12.399999999999988,
+  "state": "Level1-2-custom"
+}
