@@ -511,7 +511,7 @@ def find_most_urgent_enemy(ram: np.ndarray):
     return best
 
 
-def eval_genomes(genomes, config, env, render=False):
+def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
     for genome_id, genome in genomes:
         net = neat.nn.FeedForwardNetwork.create(genome, config)
 
@@ -543,7 +543,11 @@ def eval_genomes(genomes, config, env, render=False):
         # progress in a level shorter than the previous one's ending x. Fix:
         # accumulate an offset each time a level transition is detected, so
         # world_x is a true running total across the whole episode.
-        level_offset = 0
+        # Starts at initial_level_offset rather than always 0, so an episode
+        # that starts mid-game (via --state) is scored on the same scale as
+        # one starting from the very beginning, instead of always looking
+        # artificially worse just for skipping levels it never had to solve.
+        level_offset = initial_level_offset
         prev_world_level = (
             int(np.int8(ram[ADDR_LEVEL_HI])),
             int(np.int8(ram[ADDR_LEVEL_LO])),
@@ -1080,6 +1084,33 @@ def find_available_states(game: str = "SuperMarioBros-Nes-v0") -> list:
     return [f[: -len(".state")] for f in files]
 
 
+def load_state_offset(state: str | None, game: str = "SuperMarioBros-Nes-v0") -> int:
+    """Returns the level_offset saved alongside a custom state (via
+    probe_level_type.py's 'S' key) — the distance already covered in levels
+    completed before that state's starting point — so an episode starting
+    mid-game can be scored on the same scale as one starting from the very
+    beginning. Returns 0 (with no offset applied) for states with no sidecar
+    file, which includes every bundled state (Level1-1, Level1-4, Level2-1,
+    ...) — none of those have a known offset recorded, so 0 is the honest
+    default rather than a guess."""
+    if not state:
+        return 0
+    reference = stable_retro.data.get_file_path(game, "Level1-1.state")
+    if reference is None:
+        return 0
+    offset_path = os.path.join(os.path.dirname(reference), f"{state}.offset.json")
+    if not os.path.exists(offset_path):
+        return 0
+    try:
+        with open(offset_path) as f:
+            return int(json.load(f).get("level_offset", 0))
+    except Exception as e:
+        print(
+            f"Warning: could not read offset file for state '{state}' ({e}); using 0."
+        )
+        return 0
+
+
 def pick_state_interactively(states: list, default_state: str) -> str:
     """Full-screen picker (curses) for which stable-retro state to start each
     training episode from. Same interaction model as pick_run_interactively:
@@ -1232,11 +1263,19 @@ def run_training(
             if state
             else stable_retro.make("SuperMarioBros-Nes-v0", render_mode=None)
         )
+        initial_level_offset = load_state_offset(state)
         if state:
-            print(f"Starting each episode from state: {state}")
+            print(
+                f"Starting each episode from state: {state}"
+                + (
+                    f" (level_offset={initial_level_offset})"
+                    if initial_level_offset
+                    else ""
+                )
+            )
 
         def eval_wrapper(genomes, cfg):
-            eval_genomes(genomes, cfg, env)
+            eval_genomes(genomes, cfg, env, initial_level_offset=initial_level_offset)
 
         start_time = time.time()
         winner = None

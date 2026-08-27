@@ -52,6 +52,7 @@ from train_neat import (
     compute_run_arrows,
     debug_snapshot,
     load_run_info,
+    load_state_offset,
     outputs_to_action,
     pick_run_interactively,
     summarize_run,
@@ -210,6 +211,11 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
     else:
         run_info = load_run_info(os.path.dirname(winner_path))
         state = run_info.get("state") if run_info else None
+    # Distance already covered before this state's starting point (see
+    # probe_level_type.py's 'S' key / train_neat.py's --state) — added to
+    # every position shown below, so it's on the same scale as a run that
+    # started from the very beginning instead of looking artificially low.
+    initial_level_offset = load_state_offset(state)
 
     log_path = os.path.join(os.getcwd(), f"watch-{datetime.now():%Y%m%d-%H%M%S}.log")
     original_stdout = sys.stdout
@@ -351,7 +357,11 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
             obs, reward, terminated, truncated, info = env.step(action)
             ram = env.get_ram()
 
-            world_x = info.get("xscrollHi", 0) * 256 + info.get("xscrollLo", 0)
+            world_x = (
+                initial_level_offset
+                + info.get("xscrollHi", 0) * 256
+                + info.get("xscrollLo", 0)
+            )
             if world_x > max_world_x:
                 max_world_x = world_x
 
