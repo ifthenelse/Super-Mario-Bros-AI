@@ -511,11 +511,29 @@ def set_render_scale(env, scale: int = RENDER_SCALE):
     of the console's actual resolution). Must be called once, before the
     first env.render(): RetroEnv only creates its viewer lazily the first
     time, and leaves it alone from then on — setting it ourselves first means
-    that's the one actually used, instead of the library's own default."""
+    that's the one actually used, instead of the library's own default.
+
+    stable-retro's SimpleImageViewer only ever *shrinks* a frame down to fit
+    its maxwidth (`if display_width > self.maxwidth: ...`) — a frame already
+    smaller than maxwidth, like the NES's native 256x240, is left exactly as
+    it is, so simply raising maxwidth alone does nothing to enlarge it. This
+    subclass pre-upscales the frame itself (nearest-neighbor, so pixels stay
+    crisp/blocky rather than blurry) before handing it off, so by the time
+    the inherited logic runs there's nothing further for it to do but create
+    the window at the right size."""
     from stable_retro.rendering import SimpleImageViewer
 
+    class _FixedScaleImageViewer(SimpleImageViewer):
+        def imshow(self, arr, rotation=0):
+            height, width, _channels = arr.shape
+            if width < self.maxwidth:
+                factor = self.maxwidth // width
+                if factor > 1:
+                    arr = np.repeat(np.repeat(arr, factor, axis=0), factor, axis=1)
+            super().imshow(arr, rotation=rotation)
+
     target = getattr(env, "unwrapped", env)
-    target.viewer = SimpleImageViewer(maxwidth=NES_NATIVE_WIDTH * scale)
+    target.viewer = _FixedScaleImageViewer(maxwidth=NES_NATIVE_WIDTH * scale)
 
 
 def outputs_to_action(outputs) -> np.ndarray:
