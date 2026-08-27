@@ -292,6 +292,29 @@ MAX_ADVANCE_BONUS_PER_EPISODE = 15
 CLEAR_PATH_BONUS_PER_FRAME = 0.15
 MAX_CLEAR_PATH_BONUS_PER_EPISODE = 15
 
+# NES button index for DOWN in the action array — candidate, inferred from
+# the standard gym-retro/stable-retro NES button order
+# ["B","null","SELECT","START","UP","DOWN","LEFT","RIGHT","A"], not confirmed
+# via a dedicated probe the way e.g. index 8 = A (jump) has been (that one's
+# been empirically correct throughout this whole project). If pipe-entry
+# behavior doesn't materialize after training, check this first.
+ADDR_ACTION_DOWN_INDEX = 5
+
+# Observed: a genome reached the Warp Zone bonus room (accessible via 3 pipes)
+# and stood there until time ran out — it has never had a reason to learn
+# that entering a pipe means standing at its mouth and holding DOWN, since
+# nothing above covers "stuck with no enemy and no viable ground-level path
+# forward" (Warp Zone pipes aren't a "ground continues ahead" situation, so
+# clear_path_bonus doesn't apply either). This rewards holding DOWN for a
+# sustained stretch — not just tapping it once — specifically while stuck
+# with nothing else identified as the problem, since a single frame likely
+# isn't enough to trigger an actual pipe transition in-game.
+DOWN_HOLD_THRESHOLD_FRAMES = (
+    15  # consecutive frames of holding DOWN before this starts paying
+)
+DOWN_HOLD_BONUS_PER_FRAME = 0.2
+MAX_DOWN_HOLD_BONUS_PER_EPISODE = 15
+
 
 def get_tile_absolute(ram: np.ndarray, x: int, y: int) -> int:
     """Returns 1 if the tile at absolute world coordinates (x, y) is solid, 0 otherwise."""
@@ -482,33 +505,57 @@ def outputs_to_action(outputs) -> np.ndarray:
     return np.array([1 if o > 0.5 else 0 for o in outputs], dtype=np.int8)
 
 
-def find_most_urgent_enemy(ram: np.ndarray):
-    """Returns (dx, clearance, enemy_type) for whichever active enemy has the
-    soonest time-to-impact, or None if no enemies are active. Kept independent
-    from build_observation() so its output shape/signature stays stable for
-    other callers (e.g. watch_winner.py) — this is purely for reward shaping."""
+def list_active_enemies(ram: np.ndarray) -> list:
+    """Returns (dx, clearance, enemy_type, abs_time_to_impact) for every
+    currently active enemy slot, not just the single most urgent one — needed
+    where a second, less time-critical threat still matters (e.g. two
+    Piranha Plants blocking a passage side by side: reacting only to
+    whichever is more "urgent" can still walk Mario into the other one)."""
     mario_x_screen = int(ram[ADDR_X_SCREEN])
     mario_x_page = int(ram[ADDR_X_PAGE])
     mario_world_x = mario_x_page * 256 + mario_x_screen
     mario_y = int(ram[ADDR_Y_POS])
     x_speed = int(np.int8(ram[ADDR_X_SPEED]))
 
-    best = None
-    best_abs_time = None
+    enemies = []
     for i in range(N_ENEMY_SLOTS):
         if int(ram[ADDR_ENEMY_DRAWN + i]):
             enemy_x = int(ram[ADDR_ENEMY_X_SCREEN + i])
             enemy_y = int(ram[ADDR_ENEMY_Y_POS + i])
             enemy_type = int(ram[ADDR_ENEMY_TYPE + i])
             dx = enemy_x - mario_x_screen
-            dy = enemy_y - mario_y
             enemy_world_x = mario_world_x + dx
             clearance = enemy_ceiling_clearance(ram, enemy_world_x, enemy_y)
             time_to_enemy = dx / (abs(x_speed) + 1) / 50.0
-            if best_abs_time is None or abs(time_to_enemy) < best_abs_time:
-                best_abs_time = abs(time_to_enemy)
-                best = (dx, clearance, enemy_type)
-    return best
+            enemies.append((dx, clearance, enemy_type, abs(time_to_enemy)))
+    return enemies
+
+
+def find_most_urgent_enemy(ram: np.ndarray):
+    """Returns (dx, clearance, enemy_type) for whichever active enemy has the
+    soonest time-to-impact, or None if no enemies are active. Kept independent
+    from build_observation() so its output shape/signature stays stable for
+    other callers (e.g. watch_winner.py) — this is purely for reward shaping."""
+    enemies = list_active_enemies(ram)
+    if not enemies:
+        return None
+    dx, clearance, enemy_type, _abs_time = min(enemies, key=lambda e: e[3])
+    return (dx, clearance, enemy_type)
+
+
+def any_blocking_enemy_nearby(ram: np.ndarray, danger_dx: int) -> bool:
+    """True if ANY active enemy — not just the most urgent one — is close and
+    effectively unjumpable (zero clearance, or a Piranha Plant regardless of
+    clearance — see the note on effectively_unjumpable below). Covers the
+    two-Piranha-Plants-at-once case: whichever one is "most urgent" by
+    time-to-impact might momentarily read as passable while the other one is
+    still there blocking the way — checking only the single most urgent
+    enemy can miss it entirely."""
+    for dx, clearance, enemy_type, _abs_time in list_active_enemies(ram):
+        effectively_unjumpable = clearance == 0.0 or enemy_type == PIRANHA_PLANT_TYPE
+        if effectively_unjumpable and abs(dx) < danger_dx:
+            return True
+    return False
 
 
 def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
@@ -530,6 +577,8 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
         running_streak = 0
         advance_bonus = 0.0
         clear_path_bonus = 0.0
+        down_hold_bonus = 0.0
+        down_hold_streak = 0
         idle_tried_actions = set()
 
         # xscrollHi/xscrollLo reset to 0 on every level transition (1-1 -> 1-2,
@@ -565,15 +614,28 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
             mario_x_page = int(ram[ADDR_X_PAGE])
             mario_world_x_now = mario_x_page * 256 + mario_x_screen
             mario_y_now = int(ram[ADDR_Y_POS])
-            if urgent is not None:
+
+            # Checked across ALL active enemies, not just the single most
+            # urgent one — see any_blocking_enemy_nearby's docstring for why
+            # (two Piranha Plants at once being the motivating case). Piranha
+            # Plants can't be safely jumped over OR landed on — touching one
+            # from any direction is lethal (unlike Goombas/Koopas, which can
+            # be stomped) — so their static tile "clearance" is misleading:
+            # geometrically there's often room above them, but that's
+            # irrelevant since landing there kills Mario just as dead as
+            # running into them from the side. Observed directly: a genome
+            # jumped an otherwise well-timed arc and died landing squarely on
+            # top of one. Treated as always maximally dangerous close-up,
+            # regardless of the computed clearance value.
+            if any_blocking_enemy_nearby(ram, CAUTION_DANGER_DX):
+                # No safe way past what's nearby: reward holding still or
+                # backing off, instead of freezing uselessly or pushing
+                # forward into it.
+                if x_speed_now_early <= 0:
+                    caution_bonus += CAUTION_BONUS_PER_FRAME
+            elif urgent is not None:
                 dx, clearance, enemy_type = urgent
-                if clearance == 0.0 and abs(dx) < CAUTION_DANGER_DX:
-                    # No safe way to jump over this enemy and it's very close:
-                    # reward holding still or backing off, instead of freezing
-                    # uselessly or pushing forward into it.
-                    if x_speed_now_early <= 0:
-                        caution_bonus += CAUTION_BONUS_PER_FRAME
-                elif (
+                if (
                     clearance > 0.0
                     and abs(dx) < ADVANCE_DANGER_DX
                     and enemy_type != PIRANHA_PLANT_TYPE
@@ -605,13 +667,41 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
                 if ground_ahead_near and ground_ahead_far:
                     clear_path_bonus += CLEAR_PATH_BONUS_PER_FRAME
 
+            # Reward holding DOWN for a sustained stretch specifically while
+            # stuck (no progress for a while) — covers pipe entry (Warp Zone
+            # and otherwise), which needs DOWN held continuously at a pipe's
+            # mouth, not just tapped once. Gated on "stuck" so this can't be
+            # milked by holding DOWN indiscriminately during normal play.
+            if bool(action[ADDR_ACTION_DOWN_INDEX]):
+                down_hold_streak += 1
+            else:
+                down_hold_streak = 0
+            if (
+                down_hold_streak >= DOWN_HOLD_THRESHOLD_FRAMES
+                and step - last_progress_step >= IDLE_THRESHOLD_FRAMES
+            ):
+                down_hold_bonus += DOWN_HOLD_BONUS_PER_FRAME
+
             # Solid block directly ahead at ground level, with clear room right
             # above it to jump over: reward pressing jump here specifically,
             # since the repeatedly observed failure mode is walking straight
-            # into exactly this without ever attempting to clear it.
+            # into exactly this without ever attempting to clear it. Skipped
+            # when a Piranha Plant is the nearby urgent enemy — that block is
+            # very likely the plant's own pipe, and jumping "over" it risks
+            # landing squarely on the plant instead, which is just as lethal.
             blocked_ahead = get_tile(ram, mario_world_x_now, mario_y_now, 16, 0) == 1
             room_above = get_tile(ram, mario_world_x_now, mario_y_now, 16, -16) == 0
-            if blocked_ahead and room_above and bool(action[8]):
+            near_piranha_plant = (
+                urgent is not None
+                and urgent[2] == PIRANHA_PLANT_TYPE
+                and abs(urgent[0]) < ADVANCE_DANGER_DX
+            )
+            if (
+                blocked_ahead
+                and room_above
+                and bool(action[8])
+                and not near_piranha_plant
+            ):
                 jump_when_blocked_bonus += JUMP_WHEN_BLOCKED_BONUS_PER_FRAME
 
             # Complementary case: blocked ahead AND blocked above too (a
@@ -718,6 +808,7 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
         capped_clear_path_bonus = min(
             clear_path_bonus, MAX_CLEAR_PATH_BONUS_PER_EPISODE
         )
+        capped_down_hold_bonus = min(down_hold_bonus, MAX_DOWN_HOLD_BONUS_PER_EPISODE)
         genome.fitness = max(
             0.0,
             float(max_world_x)
@@ -728,7 +819,8 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
             + capped_narrow_gap_bonus
             + capped_running_bonus
             + capped_advance_bonus
-            + capped_clear_path_bonus,
+            + capped_clear_path_bonus
+            + capped_down_hold_bonus,
         )
 
         # Kept alongside the composite fitness (not used by NEAT itself) so we
@@ -743,6 +835,7 @@ def eval_genomes(genomes, config, env, render=False, initial_level_offset=0):
         genome.running_bonus = capped_running_bonus
         genome.advance_bonus = capped_advance_bonus
         genome.clear_path_bonus = capped_clear_path_bonus
+        genome.down_hold_bonus = capped_down_hold_bonus
 
 
 def find_checkpoints(root_dir: str) -> list:
@@ -799,6 +892,7 @@ def write_run_info(
     best_running_bonus: float | None = None,
     best_advance_bonus: float | None = None,
     best_clear_path_bonus: float | None = None,
+    best_down_hold_bonus: float | None = None,
     state: str | None = None,
 ):
     info = {
@@ -815,6 +909,7 @@ def write_run_info(
         "best_running_bonus": best_running_bonus,
         "best_advance_bonus": best_advance_bonus,
         "best_clear_path_bonus": best_clear_path_bonus,
+        "best_down_hold_bonus": best_down_hold_bonus,
         # Which stable-retro state each episode started from (None = the
         # game's normal start). Fitness/raw_distance from a state-specific
         # run isn't on the same scale as a full-game run, since it skips
@@ -1310,6 +1405,7 @@ def run_training(
                     run_bonus = getattr(gen_best, "running_bonus", None)
                     adv_bonus = getattr(gen_best, "advance_bonus", None)
                     cp_bonus = getattr(gen_best, "clear_path_bonus", None)
+                    dh_bonus = getattr(gen_best, "down_hold_bonus", None)
                     breakdown = ""
                     if raw_d is not None:
                         breakdown = (
@@ -1317,7 +1413,7 @@ def run_training(
                             f"caution_bonus={bonus:.1f} anti_idle_bonus={idle_bonus:.1f} "
                             f"jump_when_blocked_bonus={jwb_bonus:.1f} narrow_gap_bonus={ng_bonus:.1f} "
                             f"running_bonus={run_bonus:.1f} advance_bonus={adv_bonus:.1f} "
-                            f"clear_path_bonus={cp_bonus:.1f})"
+                            f"clear_path_bonus={cp_bonus:.1f} down_hold_bonus={dh_bonus:.1f})"
                         )
                     print(
                         f"  Best this generation: fitness={gen_best.fitness:.1f}{breakdown}"
@@ -1346,6 +1442,9 @@ def run_training(
                 best_clear_path_bonus = getattr(
                     best_genome_so_far, "clear_path_bonus", None
                 )
+                best_down_hold_bonus = getattr(
+                    best_genome_so_far, "down_hold_bonus", None
+                )
             except Exception:
                 best_so_far = None
                 best_raw_distance = None
@@ -1356,6 +1455,7 @@ def run_training(
                 best_running_bonus = None
                 best_advance_bonus = None
                 best_clear_path_bonus = None
+                best_down_hold_bonus = None
             write_run_info(
                 run_dir,
                 run_id,
@@ -1371,6 +1471,7 @@ def run_training(
                 best_running_bonus=best_running_bonus,
                 best_advance_bonus=best_advance_bonus,
                 best_clear_path_bonus=best_clear_path_bonus,
+                best_down_hold_bonus=best_down_hold_bonus,
                 state=state,
             )
 
@@ -1387,13 +1488,14 @@ def run_training(
         winner_run_bonus = getattr(winner, "running_bonus", None)
         winner_adv_bonus = getattr(winner, "advance_bonus", None)
         winner_cp_bonus = getattr(winner, "clear_path_bonus", None)
+        winner_dh_bonus = getattr(winner, "down_hold_bonus", None)
         if winner_raw_d is not None:
             print(
                 f"  (raw distance: {winner_raw_d:.0f}, lives lost: {winner_lives}, "
                 f"caution bonus: {winner_bonus:.1f}, anti-idle bonus: {winner_idle_bonus:.1f}, "
                 f"jump-when-blocked bonus: {winner_jwb_bonus:.1f}, narrow-gap bonus: {winner_ng_bonus:.1f}, "
                 f"running bonus: {winner_run_bonus:.1f}, advance bonus: {winner_adv_bonus:.1f}, "
-                f"clear-path bonus: {winner_cp_bonus:.1f})"
+                f"clear-path bonus: {winner_cp_bonus:.1f}, down-hold bonus: {winner_dh_bonus:.1f})"
             )
 
         with open("winner.pkl", "wb") as f:

@@ -295,13 +295,14 @@ def main(run_arg: str | None = None, state_arg: str | None = None):
         run_bonus = getattr(winner, "running_bonus", None)
         adv_bonus = getattr(winner, "advance_bonus", None)
         cp_bonus = getattr(winner, "clear_path_bonus", None)
+        dh_bonus = getattr(winner, "down_hold_bonus", None)
         if raw_d is not None:
             print(
                 f"  (raw distance during training: {raw_d:.0f}, lives lost: {lives}, "
                 f"caution bonus: {bonus:.1f}, anti-idle bonus: {idle_bonus:.1f}, "
                 f"jump-when-blocked bonus: {jwb_bonus:.1f}, narrow-gap bonus: {ng_bonus:.1f}, "
                 f"running bonus: {run_bonus:.1f}, advance bonus: {adv_bonus:.1f}, "
-                f"clear-path bonus: {cp_bonus:.1f})"
+                f"clear-path bonus: {cp_bonus:.1f}, down-hold bonus: {dh_bonus:.1f})"
             )
         print(
             "Controls (game window must have focus): '+' speeds up, '-' slows down, "
