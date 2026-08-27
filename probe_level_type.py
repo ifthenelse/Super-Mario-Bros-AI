@@ -28,10 +28,14 @@ Controls (game window must have focus):
   2            - load Level1-4 (castle)
   3            - load Level2-1 (normal; walk right through the whole level
                  and the pipe at the end to reach 2-2, a water level)
-  S            - save the CURRENT emulator state as a custom, reusable
-                 stable-retro state (see CUSTOM_SAVE_STATE_NAME below) —
-                 useful for training on a specific stretch of the game that
-                 has no bundled state of its own (e.g. the start of 1-2)
+  S            - save the CURRENT emulator state as a reusable stable-retro
+                 state — useful for training on a specific stretch of the
+                 game that has no bundled state of its own (e.g. the start
+                 of 1-2). Each save gets its own auto-generated, timestamped
+                 name (e.g. "Custom-20260827-181025") printed on screen, so
+                 saving a new checkpoint never silently overwrites an
+                 earlier one — note down the printed name to use it with
+                 train_neat.py's --state.
   Y            - toggle Piranha Plant Y-tracking mode: prints every active
                  Piranha Plant's RAW (absolute, not relative to Mario) Y
                  position every single frame, so you can read off its
@@ -40,6 +44,14 @@ Controls (game window must have focus):
                  NOT the same as the "dy" shown elsewhere (that's relative to
                  Mario, so it's contaminated by Mario's own vertical
                  movement whenever he jumps)
+  M            - toggle moving-platform tracking: locks onto Mario's CURRENT
+                 absolute world position the instant you press it, then
+                 prints every frame whether that exact fixed spot reads as
+                 solid or empty. Stand under/near a platform you suspect is
+                 moving, press M, and watch: a static platform gives a
+                 constant reading; a moving one flickers as it passes in and
+                 out of that fixed point. Doesn't move with Mario — press M
+                 again to release and re-lock elsewhere
   +/-          - speed up / slow down emulation
   0            - reset speed to 1x
   SPACE        - pause / resume
@@ -66,6 +78,7 @@ from train_neat import (
     N_ENEMY_SLOTS,
     PIRANHA_PLANT_TYPE,
     get_tile,
+    get_tile_absolute,
     set_render_scale,
 )
 
@@ -75,13 +88,16 @@ ADDR_OBJECT_PAUSE = 0x0747  # candidate: "Object Pause" — freezes all action e
 ADDR_LEVEL_HI = 1887  # validated (from data.json): world index
 ADDR_LEVEL_LO = 1884  # validated (from data.json): level-within-world index
 
+
 # Name used when saving a custom savestate with 'S' (see save_state below).
 # stable-retro's SuperMarioBros-Nes-v0 integration only ships states for the
 # first level of each world (Level1-1, Level2-1, ...) plus Level1-4 — there's
 # no built-in "Level1-2" or similar. This lets you create one: walk manually
 # to wherever you want an episode to start, press S, then pass
 # `--state Level1-2-custom` to train_neat.py.
-CUSTOM_SAVE_STATE_NAME = "Level1-2-custom"
+def generate_custom_state_name() -> str:
+    return f"Custom-{time.strftime('%Y%m%d-%H%M%S')}"
+
 
 # How many frames to dump in full detail right after a world-level change is
 # detected, to check whether the RAM-page-based position (used for the tile
@@ -206,6 +222,7 @@ def main():
         "print_now": False,
         "save_request": False,
         "track_piranha": False,
+        "track_tile_toggle": False,
     }
     shared["env"].reset()
     shared["env"].render()
@@ -248,6 +265,8 @@ def main():
                 print(
                     f"\nPiranha Plant Y-tracking: {'ON' if shared['track_piranha'] else 'OFF'}\n"
                 )
+            elif symbol == pyglet.window.key.M:
+                shared["track_tile_toggle"] = True
             elif symbol in QUICK_LOAD_STATES:
                 shared["load_request"] = QUICK_LOAD_STATES[symbol]
 
@@ -281,8 +300,8 @@ def main():
         "Press 1/2/3 to quick-load Level1-1 / Level1-4 / Level2-1. Press P to print values on demand."
     )
     print(
-        f"Press S to save the current position as a reusable state (default name: "
-        f"'{CUSTOM_SAVE_STATE_NAME}').\n"
+        "Press S to save the current position as a reusable state — each save gets its own "
+        "timestamped name, so it's always safe to press again without overwriting anything.\n"
     )
 
     frame_time = 1.0 / 60.0
@@ -299,6 +318,9 @@ def main():
     # itself starts mid-game.
     level_offset = 0
     prev_raw_world_x = 0
+    track_tile_active = False
+    track_tile_pos = None  # (world_x, y) locked in when tracking starts
+    prev_tile_reading = None
     while True:
         step_start = time.time()
         env = shared["env"]
@@ -326,17 +348,14 @@ def main():
 
         if shared["save_request"]:
             shared["save_request"] = False
+            state_name = generate_custom_state_name()
             try:
-                saved_path, offset_path = save_state(
-                    env, CUSTOM_SAVE_STATE_NAME, level_offset
-                )
+                saved_path, offset_path = save_state(env, state_name, level_offset)
                 print(
                     f"\n>>> Saved current state to: {saved_path} ({os.path.getsize(saved_path)} bytes)"
                 )
                 print(f">>> Saved level_offset={level_offset} to: {offset_path}")
-                print(
-                    f">>> Use it with: python train_neat.py --state {CUSTOM_SAVE_STATE_NAME}\n"
-                )
+                print(f">>> Use it with: python train_neat.py --state {state_name}\n")
             except Exception as e:
                 print(f"\n>>> Failed to save state: {e}\n")
 
@@ -371,6 +390,32 @@ def main():
                         f"  [step {step:5d}] slot={i} PIRANHA raw_y={raw_y:3d}  "
                         f"(mario_y={mario_y:3d}, for reference — this raw_y is NOT relative to it)"
                     )
+
+        if shared["track_tile_toggle"]:
+            shared["track_tile_toggle"] = False
+            track_tile_active = not track_tile_active
+            if track_tile_active:
+                track_tile_pos = (world_x_from_page, mario_y)
+                prev_tile_reading = None
+                print(
+                    f"\n>>> Moving-platform tracking ON — locked to fixed world position "
+                    f"x={track_tile_pos[0]}, y={track_tile_pos[1]}. Watching for it to "
+                    f"flicker between solid/empty (a static platform stays constant; a "
+                    f"moving one won't).\n"
+                )
+            else:
+                print("\n>>> Moving-platform tracking OFF\n")
+                track_tile_pos = None
+
+        if track_tile_active and track_tile_pos is not None:
+            reading = get_tile_absolute(ram, track_tile_pos[0], track_tile_pos[1])
+            if reading != prev_tile_reading:
+                label = "SOLID" if reading else "EMPTY"
+                print(
+                    f"  [step {step:5d}] fixed tile at x={track_tile_pos[0]}, "
+                    f"y={track_tile_pos[1]} is now {label} (changed)"
+                )
+                prev_tile_reading = reading
 
         if prev_world_level is not None and world_level != prev_world_level:
             level_offset += prev_raw_world_x
