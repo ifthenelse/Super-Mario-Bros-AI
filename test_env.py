@@ -4,18 +4,28 @@ Takes random actions for a few hundred frames and shows the game window,
 to confirm that the ROM, core, and emulator are communicating correctly.
 """
 
+import argparse
 import time
 
 import stable_retro
 
-from train_neat import set_render_scale
+from train_neat import load_state_offset, set_render_scale
 
 
-def main():
-    env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
+def main(state: str | None = None):
+    kwargs = {"render_mode": "human"}
+    if state:
+        kwargs["state"] = state
+    env = stable_retro.make("SuperMarioBros-Nes-v0", **kwargs)
 
     obs, info = env.reset()
     set_render_scale(env)
+    if state:
+        offset = load_state_offset(state)
+        print(
+            f"Starting from state: {state}"
+            + (f" (level_offset={offset})" if offset else "")
+        )
     print("Environment created successfully.")
     print("Observation (frame) shape:", obs.shape)
     print("Action space:", env.action_space)
@@ -54,4 +64,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Quick smoke test of the stable-retro environment."
+    )
+    parser.add_argument(
+        "--state",
+        "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start from (e.g. a custom one saved via probe_level_type.py's "
+        "'S' key), instead of the game's default start.",
+    )
+    args = parser.parse_args()
+    main(args.state)

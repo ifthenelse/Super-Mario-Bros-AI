@@ -14,6 +14,7 @@ documented in the classic SMB disassembly: we validate them by printing
 them while Mario walks/jumps/falls.
 """
 
+import argparse
 import time
 
 import numpy as np
@@ -21,7 +22,7 @@ import pyglet
 
 import stable_retro
 
-from train_neat import set_render_scale
+from train_neat import load_state_offset, set_render_scale
 
 ADDR_X_SCREEN = 0x0086
 ADDR_X_PAGE = 0x006D
@@ -86,10 +87,19 @@ def print_tile_grid(ram: np.ndarray, mario_world_x: int, mario_y: int):
     print()
 
 
-def main():
-    env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
+def main(state: str | None = None):
+    kwargs = {"render_mode": "human"}
+    if state:
+        kwargs["state"] = state
+    env = stable_retro.make("SuperMarioBros-Nes-v0", **kwargs)
     obs, info = env.reset()
     set_render_scale(env)
+    if state:
+        offset = load_state_offset(state)
+        print(
+            f"Starting from state: {state}"
+            + (f" (level_offset={offset})" if offset else "")
+        )
     env.render()  # forces the pyglet window to be created, so we can hook key events
 
     speed_state = {"multiplier": 1.0, "paused": False}
@@ -194,4 +204,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Validates tile grid and X/Y speed RAM addresses."
+    )
+    parser.add_argument(
+        "--state",
+        "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start from (e.g. a custom one saved via probe_level_type.py's "
+        "'S' key), instead of the game's default start.",
+    )
+    args = parser.parse_args()
+    main(args.state)

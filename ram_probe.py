@@ -9,13 +9,14 @@ printing them while Mario moves, and checking the values make sense
 (e.g. the X position increases when Mario moves right, Y changes during jumps).
 """
 
+import argparse
 import time
 
 import numpy as np
 
 import stable_retro
 
-from train_neat import set_render_scale
+from train_neat import load_state_offset, set_render_scale
 
 # Candidate addresses (to be validated)
 ADDR_X_PAGE = 0x006D  # Mario's horizontal page/screen
@@ -52,10 +53,19 @@ def read_ram_values(ram: np.ndarray) -> dict:
     return values
 
 
-def main():
-    env = stable_retro.make("SuperMarioBros-Nes-v0", render_mode="human")
+def main(state: str | None = None):
+    kwargs = {"render_mode": "human"}
+    if state:
+        kwargs["state"] = state
+    env = stable_retro.make("SuperMarioBros-Nes-v0", **kwargs)
     obs, info = env.reset()
     set_render_scale(env)
+    if state:
+        offset = load_state_offset(state)
+        print(
+            f"Starting from state: {state}"
+            + (f" (level_offset={offset})" if offset else "")
+        )
 
     print("RAM address validation. Check whether the values make sense:")
     print("- mario_x_screen should change when Mario moves")
@@ -106,4 +116,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(
+        description="Validates Super Mario Bros RAM addresses."
+    )
+    parser.add_argument(
+        "--state",
+        "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start from (e.g. a custom one saved via probe_level_type.py's "
+        "'S' key), instead of the game's default start.",
+    )
+    args = parser.parse_args()
+    main(args.state)

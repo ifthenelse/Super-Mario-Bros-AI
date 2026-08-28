@@ -58,6 +58,7 @@ Controls (game window must have focus):
   P            - print the current values on demand
 """
 
+import argparse
 import gzip
 import json
 import os
@@ -79,6 +80,7 @@ from train_neat import (
     PIRANHA_PLANT_TYPE,
     get_tile,
     get_tile_absolute,
+    load_state_offset,
     set_render_scale,
 )
 
@@ -212,9 +214,9 @@ def make_env(state=None):
     return env
 
 
-def main():
+def main(initial_state: str | None = None, initial_level_offset: int = 0):
     shared = {
-        "env": make_env(),
+        "env": make_env(state=initial_state),
         "action": np.zeros(9, dtype=np.int8),
         "speed_multiplier": 1.0,
         "paused": False,
@@ -313,10 +315,11 @@ def main():
     transition_dump_remaining = 0
     # Tracks distance already covered in levels completed *within this
     # session* (mirrors eval_genomes()'s level_offset accumulation in
-    # train_neat.py) — only accurate for a level actually walked through
-    # here, not one jumped into directly via a quick-load or a state that
-    # itself starts mid-game.
-    level_offset = 0
+    # train_neat.py) — starts at initial_level_offset (from the state's own
+    # sidecar file, if one was passed in and had one) rather than always 0,
+    # so resuming from a custom state keeps the running total accurate
+    # instead of restarting it from scratch.
+    level_offset = initial_level_offset
     prev_raw_world_x = 0
     track_tile_active = False
     track_tile_pos = None  # (world_x, y) locked in when tracking starts
@@ -468,7 +471,25 @@ def main():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Manual RAM probe for Super Mario Bros."
+    )
+    parser.add_argument(
+        "--state",
+        "-s",
+        type=str,
+        default=None,
+        help="stable-retro state to start from (e.g. 'Custom-20260828-003324'), instead of the "
+        "game's default start. If it has a matching <name>.offset.json sidecar (see the 'S' "
+        "key), that offset is loaded too, so level_offset starts accurate instead of at 0.",
+    )
+    args = parser.parse_args()
+
+    initial_offset = load_state_offset(args.state) if args.state else 0
+    if args.state and initial_offset:
+        print(f"Loaded level_offset={initial_offset} for state '{args.state}'.")
+
     try:
-        main()
+        main(initial_state=args.state, initial_level_offset=initial_offset)
     except KeyboardInterrupt:
         print("\nProbe interrupted by user.")
