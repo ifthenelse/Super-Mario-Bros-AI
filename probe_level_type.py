@@ -81,6 +81,7 @@ from train_neat import (
     get_tile,
     get_tile_absolute,
     load_state_offset,
+    resolve_state_arg,
     set_render_scale,
 )
 
@@ -485,11 +486,12 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    initial_offset = load_state_offset(args.state) if args.state else 0
-    if args.state and initial_offset:
-        print(f"Loaded level_offset={initial_offset} for state '{args.state}'.")
+    state = resolve_state_arg(args.state)
+    initial_offset = load_state_offset(state) if state else 0
+    if state and initial_offset:
+        print(f"Loaded level_offset={initial_offset} for state '{state}'.")
 
     try:
-        main(initial_state=args.state, initial_level_offset=initial_offset)
+        main(initial_state=state, initial_level_offset=initial_offset)
     except KeyboardInterrupt:
         print("\nProbe interrupted by user.")

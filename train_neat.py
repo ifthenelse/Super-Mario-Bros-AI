@@ -1242,6 +1242,22 @@ def load_state_offset(state: str | None, game: str = "SuperMarioBros-Nes-v0") ->
         return 0
 
 
+def describe_state_line(state: str, game: str = "SuperMarioBros-Nes-v0") -> str:
+    """One display line for a state: its name, level_offset (if it has a
+    sidecar), and when the .state file was saved — mainly so a pile of
+    auto-timestamped "Custom-20260828-..." entries becomes distinguishable
+    at a glance, instead of just being a list of near-identical names."""
+    offset = load_state_offset(state, game)
+    reference = stable_retro.data.get_file_path(game, f"{state}.state")
+    when = ""
+    if reference and os.path.exists(reference):
+        when = datetime.fromtimestamp(os.path.getmtime(reference)).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    offset_str = f"offset={offset}" if offset else "offset=0 (none recorded)"
+    return f"{state:<28} {offset_str:<24} saved={when or 'n/a'}"
+
+
 def pick_state_interactively(states: list, default_state: str) -> str:
     """Full-screen picker (curses) for which stable-retro state to start each
     training episode from. Same interaction model as pick_run_interactively:
@@ -1284,7 +1300,9 @@ def pick_state_interactively(states: list, default_state: str) -> str:
                 )
                 tag = " (default)" if i == default_index else ""
                 try:
-                    stdscr.addstr(3 + i, 0, f"{marker}{s}{tag}", attr)
+                    stdscr.addstr(
+                        3 + i, 0, f"{marker}{describe_state_line(s)}{tag}", attr
+                    )
                 except curses.error:
                     pass
             stdscr.refresh()
@@ -1307,6 +1325,30 @@ def pick_state_interactively(states: list, default_state: str) -> str:
                 return states[default_index]
 
     return curses.wrapper(_inner)
+
+
+def resolve_state_arg(
+    cli_state: str | None, default_state: str = "Level1-1"
+) -> str | None:
+    """Single shared entry point for every script that optionally accepts
+    --state: if cli_state was given, use it directly with no prompt.
+    Otherwise, list whatever states are available and show the interactive
+    picker (default_state pre-selected, falling back to it automatically
+    after PROMPT_TIMEOUT_SECONDS of no input). Returns None only if no
+    states are available at all, in which case the game's normal start is
+    used. Shared so probe_level_type.py, train_neat.py, and watch_winner.py
+    all behave identically here instead of three separate implementations
+    drifting apart over time."""
+    if cli_state is not None:
+        return cli_state
+    available = find_available_states()
+    if not available:
+        print("No stable-retro states found: using the game's default start.")
+        return None
+    resolved_default = default_state if default_state in available else available[0]
+    state = pick_state_interactively(available, resolved_default)
+    print(f"Using state: {state}")
+    return state
 
 
 def restore_checkpoint_with_config(
@@ -1627,19 +1669,7 @@ if __name__ == "__main__":
             resume_path = runs[choice]["resume_checkpoint"]
             print(f"\nResuming from run: {runs[choice]['run_id']}")
 
-    if args.state is not None:
-        state = args.state
-    else:
-        available_states = find_available_states()
-        if not available_states:
-            print("No stable-retro states found: using the game's default start.")
-            state = None
-        else:
-            default_state = (
-                "Level1-1" if "Level1-1" in available_states else available_states[0]
-            )
-            state = pick_state_interactively(available_states, default_state)
-            print(f"Using state: {state}")
+    state = resolve_state_arg(args.state)
 
     if resume_path:
         run_training(
